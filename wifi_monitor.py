@@ -402,6 +402,7 @@ def write_json_line(snapshot, log_dir):
     path = json_path(log_dir)
     with open(path, "a") as fh:
         fh.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+    return path
 
 
 # ---------------------------------------------------------------------------

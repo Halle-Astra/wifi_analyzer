@@ -64,7 +64,7 @@ def stop_native_scanner():
 DEFAULT_PORT = 8800
 DEFAULT_INTERVAL = 10
 DEFAULT_LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
-MAX_HISTORY = 360
+TWO_DAYS_SECONDS = 2 * 24 * 3600
 
 
 def safe_float(value):
@@ -99,75 +99,91 @@ def list_log_dates(log_dir):
     return dates
 
 
-def load_log_dates(log_dir, dates, max_items=MAX_HISTORY):
-    snapshots = []
+def snapshot_to_history_entry(snapshot):
+    return {
+        "timestamp": snapshot.get("timestamp"),
+        "signal_dbm": safe_float(snapshot.get("signal_dbm")),
+        "noise_dbm": safe_float(snapshot.get("noise_dbm")),
+        "snr_db": safe_float(snapshot.get("snr_db")),
+        "tx_rate_mbps": safe_float(snapshot.get("tx_rate_mbps")),
+        "ping_latency_ms": safe_float(snapshot.get("ping_latency_ms")),
+        "internet_reachable": safe_bool(snapshot.get("internet_reachable")),
+        "neighbor_count": safe_float(snapshot.get("neighbor_count")),
+        "same_channel_neighbors": safe_float(snapshot.get("same_channel_neighbors")),
+        "rf_total_devices": safe_float(snapshot.get("rf_total_devices")),
+        "anonymous_devices": safe_float(snapshot.get("anonymous_devices")),
+        "bluetooth_device_count": safe_float(snapshot.get("bluetooth_device_count")),
+        "channel": safe_float(snapshot.get("channel")),
+        "ap_reachable": safe_bool(snapshot.get("ap_reachable")),
+        "ap_ping_latency_ms": safe_float(snapshot.get("ap_ping_latency_ms")),
+    }
+
+
+def build_log_index(log_dir, dates):
+    entries = []
+    history_entries = []
+    events = []
     for date in dates:
         path = os.path.join(log_dir, f"wifi_{date}.jsonl")
         if not os.path.isfile(path):
             continue
         try:
-            with open(path) as fh:
-                for line in fh:
-                    line = line.strip()
+            with open(path, "rb") as fh:
+                while True:
+                    offset = fh.tell()
+                    line = fh.readline()
                     if not line:
-                        continue
+                        break
                     try:
-                        obj = json.loads(line)
-                        snapshots.append(obj)
+                        obj = json.loads(line.decode("utf-8"))
                     except Exception:
                         continue
+                    ts = obj.get("timestamp", "")
+                    entries.append((ts, path, offset))
+                    history_entries.append(snapshot_to_history_entry(obj))
+                    for evt in obj.get("events", []):
+                        events.append({
+                            "timestamp": ts,
+                            "type": evt,
+                            "detail": "loaded from historical log",
+                        })
         except Exception:
             continue
-    snapshots.sort(key=lambda x: x.get("timestamp", ""))
-    if len(snapshots) > max_items:
-        snapshots = snapshots[-max_items:]
+    entries.sort(key=lambda x: x[0])
+    history_entries.sort(key=lambda x: x.get("timestamp", ""))
+    events.sort(key=lambda x: x.get("timestamp", ""))
+    return entries, history_entries, events
 
-    history = []
-    events = []
-    for snapshot in snapshots:
-        history.append({
-            "timestamp": snapshot.get("timestamp"),
-            "signal_dbm": safe_float(snapshot.get("signal_dbm")),
-            "noise_dbm": safe_float(snapshot.get("noise_dbm")),
-            "snr_db": safe_float(snapshot.get("snr_db")),
-            "tx_rate_mbps": safe_float(snapshot.get("tx_rate_mbps")),
-            "ping_latency_ms": safe_float(snapshot.get("ping_latency_ms")),
-            "internet_reachable": safe_bool(snapshot.get("internet_reachable")),
-            "neighbor_count": safe_float(snapshot.get("neighbor_count")),
-            "same_channel_neighbors": safe_float(snapshot.get("same_channel_neighbors")),
-            "rf_total_devices": safe_float(snapshot.get("rf_total_devices")),
-            "anonymous_devices": safe_float(snapshot.get("anonymous_devices")),
-            "bluetooth_device_count": safe_float(snapshot.get("bluetooth_device_count")),
-            "channel": safe_float(snapshot.get("channel")),
-            "ap_reachable": safe_bool(snapshot.get("ap_reachable")),
-            "ap_ping_latency_ms": safe_float(snapshot.get("ap_ping_latency_ms")),
-        })
-        for evt in snapshot.get("events", []):
-            events.append({
-                "timestamp": snapshot.get("timestamp"),
-                "type": evt,
-                "detail": "loaded from historical log",
-            })
-    current = snapshots[-1] if snapshots else {}
-    return {
-        "current": current,
-        "history": history,
-        "snapshots": snapshots,
-        "events": events,
-    }
+
+def read_snapshot_at(path, offset):
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            line = fh.readline()
+        return json.loads(line.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def trim_history_entries(entries, interval_seconds):
+    max_items = max(720, int(TWO_DAYS_SECONDS / max(1, interval_seconds)))
+    if len(entries) > max_items:
+        return entries[-max_items:]
+    return entries
 
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
 
 class MonitorState:
-    def __init__(self, max_history=MAX_HISTORY):
+    def __init__(self, interval=DEFAULT_INTERVAL):
         self.lock = threading.Lock()
         self.current = None
         self.prev = None
-        self.history = collections.deque(maxlen=max_history)
-        self.full_history = collections.deque(maxlen=max_history)
-        self.events = collections.deque(maxlen=200)
+        self.interval = interval
+        self.history = []
+        self.line_index = []
+        self.events = []
         self.running = True
         self.log_dir = DEFAULT_LOG_DIR
 
@@ -186,35 +202,30 @@ def sampler_loop(interval, log_dir):
         snapshot["events"] = [e["type"] for e in events]
 
         write_csv_row(snapshot, log_dir)
-        write_json_line(snapshot, log_dir)
+        json_path = write_json_line(snapshot, log_dir)
 
         with state.lock:
             state.prev = state.current
             state.current = snapshot
-            state.full_history.append(snapshot)
-            state.history.append({
-                "timestamp": snapshot.get("timestamp"),
-                "signal_dbm": snapshot.get("signal_dbm"),
-                "noise_dbm": snapshot.get("noise_dbm"),
-                "snr_db": snapshot.get("snr_db"),
-                "tx_rate_mbps": snapshot.get("tx_rate_mbps"),
-                "ping_latency_ms": snapshot.get("ping_latency_ms"),
-                "internet_reachable": snapshot.get("internet_reachable"),
-                "neighbor_count": snapshot.get("neighbor_count"),
-                "same_channel_neighbors": snapshot.get("same_channel_neighbors"),
-                "rf_total_devices": snapshot.get("rf_total_devices"),
-                "anonymous_devices": snapshot.get("anonymous_devices"),
-                "bluetooth_device_count": snapshot.get("bluetooth_device_count"),
-                "channel": snapshot.get("channel"),
-                "ap_reachable": snapshot.get("ap_reachable"),
-                "ap_ping_latency_ms": snapshot.get("ap_ping_latency_ms"),
-            })
+            state.history.append(snapshot_to_history_entry(snapshot))
+            if json_path:
+                fsize = os.path.getsize(json_path)
+                line_bytes = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
+                offset = max(0, fsize - len(line_bytes) - 1)
+                state.line_index.append((snapshot.get("timestamp", ""), json_path, offset))
             for ev in events:
                 state.events.append({
                     "timestamp": snapshot.get("timestamp"),
                     "type": ev["type"],
                     "detail": ev["detail"],
                 })
+            max_items = max(720, int(TWO_DAYS_SECONDS / max(1, interval)))
+            if len(state.history) > max_items:
+                state.history = state.history[-max_items:]
+            if len(state.line_index) > max_items:
+                state.line_index = state.line_index[-max_items:]
+            if len(state.events) > max_items:
+                state.events = state.events[-max_items:]
 
         for _ in range(interval * 10):
             if not state.running:
@@ -276,9 +287,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(data)
 
         elif path == "/api/snapshots":
-            with state.lock:
-                data = list(state.full_history)
-            self._json_response(data)
+            self._json_response({"deprecated": True, "msg": "use /api/view"})
 
         elif path == "/api/events":
             with state.lock:
@@ -291,8 +300,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/timeline":
             with state.lock:
-                data = [{"i": i, "t": s.get("timestamp", "")}
-                        for i, s in enumerate(state.full_history)]
+                data = [{"i": i, "t": e[0]}
+                        for i, e in enumerate(state.line_index)]
             self._json_response(data)
 
         elif path == "/api/view":
@@ -300,17 +309,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             center = int(qs.get("center", ["-1"])[0])
             window = int(qs.get("window", ["90"])[0])
             with state.lock:
-                total = len(state.full_history)
+                total = len(state.line_index)
                 if center < 0 or center >= total:
                     center = max(0, total - 1)
                 lo = max(0, center - window)
                 hi = min(total, center + window + 1)
-                snaps = list(state.full_history)[lo:hi]
-                hist = list(state.history)[lo:hi]
+                index_slice = state.line_index[lo:hi]
+                hist = state.history[lo:hi]
                 evts = [e for e in state.events
-                        if lo < total and snaps
-                        and snaps[0].get("timestamp", "z") <= e.get("timestamp", "") <= snaps[-1].get("timestamp", "")]
-                cur_snap = list(state.full_history)[center] if center < total else {}
+                        if index_slice
+                        and index_slice[0][0] <= e.get("timestamp", "") <= index_slice[-1][0]]
+            snaps = [read_snapshot_at(path, off) for (_, path, off) in index_slice]
+            center_rel = center - lo
+            cur_snap = snaps[center_rel] if 0 <= center_rel < len(snaps) else {}
             self._json_response({
                 "center": center,
                 "lo": lo,
@@ -350,24 +361,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 self._json_response({"error": "bad request"}, 400)
                 return
-            data = load_log_dates(state.log_dir, dates, max_items=5000)
+            new_index, new_hist, new_events = build_log_index(state.log_dir, dates)
             with state.lock:
-                existing_snaps = list(state.full_history)
-                existing_hist = list(state.history)
-                existing_events = list(state.events)
-                merged_snaps = data["snapshots"] + existing_snaps
-                merged_hist = data["history"] + existing_hist
-                merged_events = data["events"] + existing_events
-                merged_snaps.sort(key=lambda x: x.get("timestamp", ""))
-                merged_hist.sort(key=lambda x: x.get("timestamp", ""))
-                merged_events.sort(key=lambda x: x.get("timestamp", ""))
-                new_max = max(MAX_HISTORY, len(merged_snaps))
-                state.full_history = collections.deque(merged_snaps, maxlen=new_max)
-                state.history = collections.deque(merged_hist, maxlen=new_max)
-                state.events = collections.deque(merged_events, maxlen=new_max)
+                existing_ts = {e[0] for e in state.line_index}
+                added = 0
+                for entry, hist_entry, in zip(new_index, new_hist):
+                    if entry[0] not in existing_ts:
+                        state.line_index.append(entry)
+                        state.history.append(hist_entry)
+                        added += 1
+                for ev in new_events:
+                    state.events.append(ev)
+                state.line_index.sort(key=lambda x: x[0])
+                state.history.sort(key=lambda x: x.get("timestamp", ""))
+                state.events.sort(key=lambda x: x.get("timestamp", ""))
             self._json_response({
-                "loaded": len(data["snapshots"]),
-                "total_in_memory": len(state.full_history),
+                "loaded": added,
+                "total_in_memory": len(state.line_index),
             })
 
         else:

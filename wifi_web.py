@@ -34,6 +34,96 @@ DEFAULT_INTERVAL = 10
 DEFAULT_LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 MAX_HISTORY = 360
 
+
+def safe_float(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def safe_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        return None
+    value = str(value).strip().lower()
+    if value in ("true", "1", "yes", "ok"):
+        return True
+    if value in ("false", "0", "no", "fail"):
+        return False
+    return None
+
+
+def list_log_dates(log_dir):
+    dates = []
+    if not os.path.isdir(log_dir):
+        return dates
+    for name in sorted(os.listdir(log_dir)):
+        if name.startswith("wifi_") and name.endswith(".jsonl"):
+            dates.append(name[len("wifi_"):-len(".jsonl")])
+    return dates
+
+
+def load_log_dates(log_dir, dates, max_items=MAX_HISTORY):
+    snapshots = []
+    for date in dates:
+        path = os.path.join(log_dir, f"wifi_{date}.jsonl")
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        snapshots.append(obj)
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+    snapshots.sort(key=lambda x: x.get("timestamp", ""))
+    if len(snapshots) > max_items:
+        snapshots = snapshots[-max_items:]
+
+    history = []
+    events = []
+    for snapshot in snapshots:
+        history.append({
+            "timestamp": snapshot.get("timestamp"),
+            "signal_dbm": safe_float(snapshot.get("signal_dbm")),
+            "noise_dbm": safe_float(snapshot.get("noise_dbm")),
+            "snr_db": safe_float(snapshot.get("snr_db")),
+            "tx_rate_mbps": safe_float(snapshot.get("tx_rate_mbps")),
+            "ping_latency_ms": safe_float(snapshot.get("ping_latency_ms")),
+            "internet_reachable": safe_bool(snapshot.get("internet_reachable")),
+            "neighbor_count": safe_float(snapshot.get("neighbor_count")),
+            "same_channel_neighbors": safe_float(snapshot.get("same_channel_neighbors")),
+            "rf_total_devices": safe_float(snapshot.get("rf_total_devices")),
+            "anonymous_devices": safe_float(snapshot.get("anonymous_devices")),
+            "bluetooth_device_count": safe_float(snapshot.get("bluetooth_device_count")),
+            "channel": safe_float(snapshot.get("channel")),
+            "ap_reachable": safe_bool(snapshot.get("ap_reachable")),
+            "ap_ping_latency_ms": safe_float(snapshot.get("ap_ping_latency_ms")),
+        })
+        for evt in snapshot.get("events", []):
+            events.append({
+                "timestamp": snapshot.get("timestamp"),
+                "type": evt,
+                "detail": "loaded from historical log",
+            })
+    current = snapshots[-1] if snapshots else {}
+    return {
+        "current": current,
+        "history": history,
+        "snapshots": snapshots,
+        "events": events,
+    }
+
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
@@ -47,6 +137,7 @@ class MonitorState:
         self.full_history = collections.deque(maxlen=max_history)
         self.events = collections.deque(maxlen=200)
         self.running = True
+        self.log_dir = DEFAULT_LOG_DIR
 
 state = MonitorState()
 
@@ -162,6 +253,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 data = list(state.events)
             self._json_response(data)
 
+        elif path == "/api/log-dates":
+            data = list_log_dates(state.log_dir)
+            self._json_response(data)
+
         elif path == "/" or path == "/index.html":
             self._file_response(
                 os.path.join(STATIC_DIR, "index.html"),
@@ -180,6 +275,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             with open("/tmp/wifi_web_debug.log", "a") as fh:
                 fh.write(f"[{_dt.datetime.now().strftime('%H:%M:%S.%f')}] {body}\n")
             self._json_response({"ok": True})
+
+        elif parsed.path == "/api/load-logs":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            try:
+                req = json.loads(body)
+                dates = req.get("dates", [])
+            except Exception:
+                self._json_response({"error": "bad request"}, 400)
+                return
+            data = load_log_dates(state.log_dir, dates, max_items=5000)
+            with state.lock:
+                existing_snaps = list(state.full_history)
+                existing_hist = list(state.history)
+                existing_events = list(state.events)
+                merged_snaps = data["snapshots"] + existing_snaps
+                merged_hist = data["history"] + existing_hist
+                merged_events = data["events"] + existing_events
+                merged_snaps.sort(key=lambda x: x.get("timestamp", ""))
+                merged_hist.sort(key=lambda x: x.get("timestamp", ""))
+                merged_events.sort(key=lambda x: x.get("timestamp", ""))
+                new_max = max(MAX_HISTORY, len(merged_snaps))
+                state.full_history = collections.deque(merged_snaps, maxlen=new_max)
+                state.history = collections.deque(merged_hist, maxlen=new_max)
+                state.events = collections.deque(merged_events, maxlen=new_max)
+            self._json_response({
+                "loaded": len(data["snapshots"]),
+                "total_in_memory": len(state.full_history),
+            })
+
         else:
             self.send_error(404)
 
@@ -196,6 +321,7 @@ def main():
     args = parser.parse_args()
 
     monitor_mod.PING_AP = args.ap
+    state.log_dir = args.log_dir
 
     def handle_sig(signum, frame):
         state.running = False

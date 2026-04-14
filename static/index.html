@@ -47,6 +47,13 @@ nav .ts{font-size:12px;color:var(--muted)}
 .spec-tooltip .itm:first-of-type{border-top:0}
 .spec-tooltip .hist{color:#c7cfe8}
 .spec-tooltip .cur{color:#fff}
+.log-bar{background:var(--panel);border-bottom:1px solid var(--line);padding:8px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.log-bar .sm{margin:0}
+.log-bar select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:13px;min-width:200px}
+.log-bar select option{background:var(--panel2)}
+.log-bar button{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:13px;cursor:pointer}
+.log-bar button:hover{opacity:.85}
+.log-bar .info{color:var(--muted);font-size:12px}
 /* RESPONSIVE */
 @media(max-width:1100px){.c3,.c4{grid-column:span 6}.c8{grid-column:span 12}}
 @media(max-width:760px){.c3,.c4,.c6,.c8,.c12{grid-column:span 12}.val{font-size:22px}}
@@ -63,6 +70,13 @@ nav .ts{font-size:12px;color:var(--muted)}
   <span class="spacer"></span>
   <span class="ts" id="navTs">-</span>
 </nav>
+
+<div class="log-bar">
+  <span class="sm" style="font-weight:600">历史日志</span>
+  <select id="log-dates" multiple size="1"><option value="">加载中…</option></select>
+  <button id="log-load-btn">载入选中日期</button>
+  <span class="info" id="log-info">启动后仅包含本次运行的数据</span>
+</div>
 
 <!-- ===== PAGE: DASHBOARD ===== -->
 <div class="page active" id="p-dashboard">
@@ -172,6 +186,22 @@ function debugLog(obj){
       body:JSON.stringify(obj)
     }).catch(()=>{});
   }catch(_e){}
+}
+async function postJSON(url, data){
+  const resp = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(data)
+  });
+  return resp.json();
+}
+async function refreshLogDates(){
+  try{
+    const dates = await api('/api/log-dates');
+    const sel = document.getElementById('log-dates');
+    sel.innerHTML = dates.length ? dates.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join('') : '<option value="">没有日志</option>';
+    sel.size = Math.min(4, Math.max(1, dates.length));
+  }catch(e){ console.error(e); }
 }
 
 /* ===== SPA ROUTER ===== */
@@ -739,6 +769,22 @@ timeSlider.addEventListener('input', function(){
   triggerSliderUpdate();
 });
 timeSlider.addEventListener('change', function(){ userDragging=false; });
+
+/* ===== LOG LOADER ===== */
+document.getElementById('log-load-btn').addEventListener('click', async function(){
+  const sel = document.getElementById('log-dates');
+  const chosen = Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);
+  if(!chosen.length){document.getElementById('log-info').textContent='请先选择日期';return;}
+  document.getElementById('log-info').textContent='载入中…';
+  try{
+    const result = await postJSON('/api/load-logs', {dates:chosen});
+    document.getElementById('log-info').textContent=`已载入 ${result.loaded} 条，内存中共 ${result.total_in_memory} 条`;
+    refresh();
+  }catch(e){
+    document.getElementById('log-info').textContent='载入失败: '+e.message;
+  }
+});
+refreshLogDates();
 
 /* ===== REFRESH LOOP ===== */
 async function refresh(){

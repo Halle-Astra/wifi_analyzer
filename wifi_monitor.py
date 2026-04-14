@@ -348,6 +348,18 @@ def collect_snapshot():
     channel_networks, rf_channel_summary = merge_rf_data(channel_networks, rf_data)
     scan_rssi_dbm, scan_bssid = current_scan_rssi(rf_data, ssid, channel)
 
+    # Recompute top-level counts from the merged authoritative network list.
+    merged_named = sum(
+        1 for nets in channel_networks.values() for n in nets if not n.get("anonymous")
+    )
+    merged_anon = sum(
+        1 for nets in channel_networks.values() for n in nets if n.get("anonymous")
+    )
+    if channel is not None:
+        same_channel_neighbors = len(channel_networks.get(channel, []))
+    else:
+        same_channel_neighbors = 0
+
     bt_devices = scan_bluetooth()
 
     reachable, latency = ping_test()
@@ -356,11 +368,7 @@ def collect_snapshot():
     if PING_AP:
         ap_reachable, ap_latency = ping_test(target=PING_AP)
 
-    same_channel_neighbors = channel_dist.get(channel, 0) if channel else 0
-
-    rf_total = rf_data.get("totalCount", 0) if rf_data else 0
-    rf_hidden = rf_data.get("hiddenCount", 0) if rf_data else 0
-    anonymous_total = max(0, rf_total - neighbor_count) if rf_data else 0
+    rf_total = merged_named + merged_anon
 
     return {
         "timestamp": now(),
@@ -378,12 +386,12 @@ def collect_snapshot():
         "tx_rate_mbps": tx_rate,
         "mcs_index": mcs,
         "security": security,
-        "neighbor_count": neighbor_count,
+        "neighbor_count": merged_named,
         "same_channel_neighbors": same_channel_neighbors,
         "channel_distribution": channel_dist,
         "channel_networks": channel_networks,
         "rf_total_devices": rf_total,
-        "anonymous_devices": anonymous_total,
+        "anonymous_devices": merged_anon,
         "rf_channel_summary": rf_channel_summary,
         "bluetooth_devices": bt_devices,
         "bluetooth_device_count": len(bt_devices),

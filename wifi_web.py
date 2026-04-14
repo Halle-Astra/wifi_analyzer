@@ -29,6 +29,38 @@ from wifi_monitor import (
     ensure_log_dir, now, SCANNER_PATH,
 )
 
+NATIVE_APP_PATH = os.path.join(SCRIPT_DIR, "WiFiScanner.app")
+NATIVE_APP_STARTED = False
+
+
+def start_native_scanner():
+    """Launch WiFiScanner.app if it exists and isn't already running."""
+    global NATIVE_APP_STARTED
+    if not os.path.isdir(NATIVE_APP_PATH):
+        return False
+    try:
+        import subprocess as _sp
+        result = _sp.run(["pgrep", "-f", "wifi_scanner_app"], capture_output=True)
+        if result.returncode == 0:
+            return True
+        _sp.Popen(["open", NATIVE_APP_PATH])
+        NATIVE_APP_STARTED = True
+        return True
+    except Exception:
+        return False
+
+
+def stop_native_scanner():
+    """Stop WiFiScanner.app only if we started it."""
+    if not NATIVE_APP_STARTED:
+        return
+    try:
+        import subprocess as _sp
+        _sp.run(["pkill", "-f", "wifi_scanner_app"], capture_output=True)
+    except Exception:
+        pass
+
+
 DEFAULT_PORT = 8800
 DEFAULT_INTERVAL = 10
 DEFAULT_LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
@@ -330,11 +362,13 @@ def main():
     signal.signal(signal.SIGTERM, handle_sig)
 
     scanner_ok = os.path.isfile(SCANNER_PATH)
+    native_ok = start_native_scanner()
     print(f"[{now()}] WiFi Monitor Web UI starting")
     print(f"  Port     : {args.port}")
     print(f"  Interval : {args.interval}s")
     print(f"  Log dir  : {args.log_dir}")
     print(f"  AP ping  : {args.ap or 'disabled (use --ap 192.168.1.10)'}")
+    print(f"  Native   : {'running' if native_ok else 'not found (run: bash build_scanner_app.sh)'}")
     print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
     print(f"  Dashboard: http://localhost:{args.port}")
 
@@ -351,6 +385,7 @@ def main():
         server.handle_request()
 
     print(f"\n[{now()}] Shutting down.")
+    stop_native_scanner()
     server.server_close()
 
 

@@ -513,6 +513,17 @@ def main():
     global PING_AP
     PING_AP = args.ap
 
+    native_app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WiFiScanner.app")
+    native_started = False
+    if os.path.isdir(native_app_path):
+        try:
+            result = subprocess.run(["pgrep", "-f", "wifi_scanner_app"], capture_output=True)
+            if result.returncode != 0:
+                subprocess.Popen(["open", native_app_path])
+                native_started = True
+        except Exception:
+            pass
+
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
@@ -524,7 +535,8 @@ def main():
     print(f"  Ping test: {PING_TARGET}")
     print(f"  AP ping  : {PING_AP or 'disabled (use --ap 192.168.1.10)'}")
     scanner_ok = os.path.isfile(SCANNER_PATH)
-    print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled (wifi_scanner not found, run: swiftc -framework CoreWLAN -framework Foundation wifi_scanner.swift -o wifi_scanner)'}")
+    print(f"  Native   : {'running' if native_started or os.path.isdir(native_app_path) else 'not found (run: bash build_scanner_app.sh)'}")
+    print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
     print(f"  BT scan  : enabled")
     print("-" * 120)
 
@@ -549,6 +561,11 @@ def main():
             time.sleep(0.1)
 
     print(f"[{now()}] Monitor stopped. Logs saved to {args.log_dir}/")
+    if native_started:
+        try:
+            subprocess.run(["pkill", "-f", "wifi_scanner_app"], capture_output=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

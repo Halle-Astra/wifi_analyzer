@@ -180,6 +180,8 @@ nav .ts{font-size:12px;color:var(--muted)}
     </div>
     <div class="card c12"><div class="sec">噪声底限与信号趋势（干扰最直接指标）</div><div class="chart-wrap" id="i-noise-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 噪声底限 — 越高越可能有非 WiFi 干扰　<span style="color:#21c77a">■</span> RSSI 信号 — 对比是否同步变化　<span style="color:#68a0ff">■</span> SNR</div></div>
     <div class="card c12"><div class="sec">匿名 RF 源数量变化趋势</div><div class="chart-wrap" id="i-anon-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 RF 设备数　<span style="color:#68a0ff">■</span> 命名邻居数 — 匿名数突增而命名数不变 → 可能新出现了非标准射频源</div></div>
+    <div class="card c12"><div class="sec">2.4GHz 干扰源频谱图</div><div class="chart-wrap" id="i-spec24-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 / 隐藏 RF 源　<span style="color:#ffb020">■</span> 蓝牙设备对应频段关注区　拖动鼠标可框选放大</div></div>
+    <div class="card c12"><div class="sec">2.4GHz 干扰源信道占用图</div><div class="chart-wrap" id="i-bar24-wrap"></div><div class="sm" style="margin-top:8px">按 2.4GHz 信道统计匿名 RF 源数量和强度，适合看 1/6/11 是否被额外射频源污染。</div></div>
     <div class="card c6">
       <div class="sec">蓝牙设备（2.4GHz 直接干扰源）</div>
       <div class="list" id="i-bt-list"></div>
@@ -786,6 +788,23 @@ function renderInterferencePage(cur, history){
     {key:'anonymous_devices',color:'#ff5d73',unit:'数量',min:0,width:2.5,decimals:0},
     {key:'neighbor_count',color:'#68a0ff',unit:'数量',min:0,width:1.5,decimals:0},
   ]});
+
+  // 2.4GHz interference spectrum and occupancy charts
+  const cnInterf = cur.channel_networks||{};
+  const anon24 = {};
+  Object.entries(cnInterf).forEach(([ch, nets])=>{
+    if(Number(ch) <= 13){
+      anon24[ch] = nets.filter(n=>n.anonymous || !n.ssid);
+    }
+  });
+  const fakeSnap = {
+    ssid: '',
+    channel: cur.channel,
+    channel_networks: anon24,
+    rf_channel_summary: cur.rf_channel_summary || {},
+  };
+  makeSpectrumChart(document.getElementById('i-spec24-wrap'), fakeSnap, null, '2.4GHz');
+  makeBarChart(document.getElementById('i-bar24-wrap'), anon24, '-');
 
   // ping vs noise correlation
   makeChart(document.getElementById('i-ping-noise-wrap'),{data:history,height:220,rightAxis:true,series:[

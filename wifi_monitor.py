@@ -167,9 +167,15 @@ BAND_NAMES = {0: "unknown", 1: "2.4GHz", 2: "5GHz"}
 def merge_rf_data(channel_networks, rf_data):
     """Merge RF scan data into channel_networks.
 
-    When the native app provides SSIDs (authorized=True), we match by
-    SSID+channel for accurate RSSI assignment. Otherwise fall back to
-    count-based anonymous estimation.
+    When the native app provides SSIDs (authorized=True), we use the RF scan
+    as the authoritative source for all networks — each RF entry IS the real
+    device, with its own SSID (or empty = truly anonymous). We discard the
+    system_profiler neighbor list and rebuild channel_networks entirely from
+    the RF scan to avoid named/anonymous flip-flop caused by system_profiler's
+    inconsistent scan results.
+
+    When the native app is NOT authorized (no SSIDs), we fall back to
+    count-based anonymous estimation against system_profiler's named list.
     """
     if not rf_data or "networks" not in rf_data:
         return channel_networks, {}
@@ -186,28 +192,55 @@ def merge_rf_data(channel_networks, rf_data):
         rf_by_channel[ch].append(net)
 
     rf_channel_summary = {}
+
+    if has_ssids:
+        new_channel_networks = {}
+        all_channels = set(channel_networks.keys()) | set(rf_by_channel.keys())
+        for ch in all_channels:
+            rf_list = rf_by_channel.get(ch, [])
+            rssi_values = [n["rssi"] for n in rf_list]
+            noise_values = [n["noise"] for n in rf_list if n.get("noise", 0) != 0]
+            named_count = sum(1 for n in rf_list if n.get("ssid"))
+            anon_count = sum(1 for n in rf_list if not n.get("ssid"))
+
+            rf_channel_summary[ch] = {
+                "named_count": named_count,
+                "rf_total_count": len(rf_list),
+                "anonymous_count": anon_count,
+                "rssi_values": rssi_values,
+                "rssi_min": min(rssi_values) if rssi_values else None,
+                "rssi_max": max(rssi_values) if rssi_values else None,
+                "rssi_avg": round(sum(rssi_values) / len(rssi_values), 1) if rssi_values else None,
+                "noise_values": noise_values,
+            }
+
+            entries = []
+            for rf in rf_list:
+                bw_raw = rf.get("channelWidth", 0)
+                band_raw = rf.get("channelBand", 0)
+                entries.append({
+                    "ssid": rf.get("ssid", ""),
+                    "bssid": rf.get("bssid", ""),
+                    "channel_raw": "",
+                    "band": BAND_NAMES.get(band_raw, ""),
+                    "width": BW_NAMES.get(bw_raw, ""),
+                    "phy_mode": "",
+                    "security": "",
+                    "rssi": rf["rssi"],
+                    "anonymous": not bool(rf.get("ssid")),
+                })
+            new_channel_networks[ch] = entries
+        return new_channel_networks, rf_channel_summary
+
     all_channels = set(channel_networks.keys()) | set(rf_by_channel.keys())
     for ch in all_channels:
         named = channel_networks.get(ch, [])
         rf_list = rf_by_channel.get(ch, [])
-
         rssi_values = [n["rssi"] for n in rf_list]
         noise_values = [n["noise"] for n in rf_list if n.get("noise", 0) != 0]
-
-        if has_ssids:
-            matched_rf = set()
-            for n in named:
-                for i, rf in enumerate(rf_list):
-                    if i not in matched_rf and rf.get("ssid") and rf["ssid"] == n.get("ssid", ""):
-                        n["rssi"] = rf["rssi"]
-                        n["bssid"] = rf.get("bssid", "")
-                        matched_rf.add(i)
-                        break
-            unmatched = [rf_list[i] for i in range(len(rf_list)) if i not in matched_rf]
-        else:
-            unmatched = rf_list[len(named):] if len(rf_list) > len(named) else []
-
+        unmatched = rf_list[len(named):] if len(rf_list) > len(named) else []
         anonymous_count = len(unmatched)
+
         rf_channel_summary[ch] = {
             "named_count": len(named),
             "rf_total_count": len(rf_list),
@@ -225,15 +258,15 @@ def merge_rf_data(channel_networks, rf_data):
             if ch not in channel_networks:
                 channel_networks[ch] = []
             channel_networks[ch].append({
-                "ssid": rf.get("ssid", ""),
-                "bssid": rf.get("bssid", ""),
+                "ssid": "",
+                "bssid": "",
                 "channel_raw": "",
                 "band": BAND_NAMES.get(band_raw, ""),
                 "width": BW_NAMES.get(bw_raw, ""),
                 "phy_mode": "",
                 "security": "",
                 "rssi": rf["rssi"],
-                "anonymous": not bool(rf.get("ssid")),
+                "anonymous": True,
             })
 
     return channel_networks, rf_channel_summary

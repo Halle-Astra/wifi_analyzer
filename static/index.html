@@ -89,6 +89,7 @@ nav .ts{font-size:12px;color:var(--muted)}
       <div class="row"><span>RF 设备总数</span><strong id="d-rf">-</strong></div>
       <div class="row"><span>匿名设备</span><strong id="d-anon">-</strong></div>
       <div class="row"><span>蓝牙设备</span><strong id="d-bt">-</strong></div>
+      <div class="row"><span>AP Ping</span><strong id="d-ap">-</strong></div>
       <div class="row"><span>TX 速率</span><strong id="d-tx">-</strong></div>
     </div>
 
@@ -108,7 +109,8 @@ nav .ts{font-size:12px;color:var(--muted)}
   <div class="grid">
     <div class="card c12"><div class="sec">信号强度与噪声 (dBm)</div><div class="chart-wrap" id="s-rssi-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：RSSI / 接收信号强度　<span style="color:#ff5d73">■</span> 红色：Noise / 噪声底限</div></div>
     <div class="card c12"><div class="sec">信噪比 SNR (dB)</div><div class="chart-wrap" id="s-snr-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> SNR：信号与噪声的差值，越高越好</div></div>
-    <div class="card c12"><div class="sec">Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ffb020">■</span> Ping 延迟：到 223.5.5.5 的往返时间</div></div>
+    <div class="card c12"><div class="sec">AP vs 公网 Ping 对比 (ms)</div><div class="chart-wrap" id="s-apcmp-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：AP / 192.168.1.10　本地无线链路　<span style="color:#ffb020">■</span> 黄色：公网 / 223.5.5.5　完整外网链路</div></div>
+    <div class="card c12"><div class="sec">公网 Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ffb020">■</span> Ping 延迟：到 223.5.5.5 的往返时间</div></div>
     <div class="card c12"><div class="sec">TX 速率 (Mbps)</div><div class="chart-wrap" id="s-tx-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#a78bfa">■</span> TX 速率：当前连接的传输速率</div></div>
   </div>
 </div>
@@ -562,12 +564,13 @@ function renderDashboard(cur, history, events){
   $('d-sig').textContent=cur.signal_dbm!=null?`${cur.signal_dbm} dBm`:'-';
   $('d-noise').textContent=`noise ${cur.noise_dbm??'-'} / SNR ${cur.snr_db??'-'}`;
   $('d-inet').innerHTML=`<span class="${cur.internet_reachable?'ok':'bad'}">${cur.internet_reachable?'可达':'失败'}</span>`;
-  $('d-lat').textContent=cur.ping_latency_ms!=null?`${cur.ping_latency_ms.toFixed(1)} ms`:'-';
+  $('d-lat').textContent=cur.ping_latency_ms!=null?`公网 ${cur.ping_latency_ms.toFixed(1)}ms`+((cur.ap_ping_latency_ms!=null)?` / AP ${cur.ap_ping_latency_ms.toFixed(1)}ms`:''):'-';
   $('d-nbr').textContent=cur.neighbor_count??'-';
   $('d-same').textContent=cur.same_channel_neighbors??'-';
   $('d-rf').textContent=cur.rf_total_devices??'-';
   $('d-anon').textContent=cur.anonymous_devices??'-';
   $('d-bt').textContent=cur.bluetooth_device_count??'-';
+  $('d-ap').textContent=cur.ap_ping_latency_ms!=null?`${cur.ap_ping_latency_ms.toFixed(1)} ms`:(cur.ap_ping_target?'FAIL':'未配置 --ap');
   $('d-tx').textContent=cur.tx_rate_mbps!=null?`${cur.tx_rate_mbps} Mbps`:'-';
   // mini trend
   makeChart(document.getElementById('d-chart-wrap'),{data:history,height:200,rightAxis:true,series:[
@@ -593,6 +596,10 @@ function renderSignal(history){
   ]});
   makeChart(document.getElementById('s-snr-wrap'),{data:history,height:220,series:[
     {key:'snr_db',color:'#68a0ff',unit:'dB',min:0,width:2.5,decimals:0},
+  ]});
+  makeChart(document.getElementById('s-apcmp-wrap'),{data:history,height:250,series:[
+    {key:'ap_ping_latency_ms',color:'#21c77a',unit:'ms',min:0,width:2.5,decimals:1},
+    {key:'ping_latency_ms',color:'#ffb020',unit:'ms',min:0,width:2,decimals:1},
   ]});
   makeChart(document.getElementById('s-ping-wrap'),{data:history,height:220,series:[
     {key:'ping_latency_ms',color:'#ffb020',unit:'ms',min:0,width:2.5,decimals:1},

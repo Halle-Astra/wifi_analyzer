@@ -28,6 +28,7 @@ import time
 DEFAULT_INTERVAL = 10  # seconds
 DEFAULT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 PING_TARGET = "223.5.5.5"  # Alibaba DNS, low latency in China
+PING_AP = None  # AP/gateway address, set via --ap
 PING_TIMEOUT = 3  # seconds
 
 running = True
@@ -268,6 +269,10 @@ def collect_snapshot():
 
     reachable, latency = ping_test()
 
+    ap_reachable, ap_latency = (None, None)
+    if PING_AP:
+        ap_reachable, ap_latency = ping_test(target=PING_AP)
+
     same_channel_neighbors = channel_dist.get(channel, 0) if channel else 0
 
     rf_total = rf_data.get("totalCount", 0) if rf_data else 0
@@ -297,6 +302,9 @@ def collect_snapshot():
         "rf_channel_summary": rf_channel_summary,
         "bluetooth_devices": bt_devices,
         "bluetooth_device_count": len(bt_devices),
+        "ap_ping_target": PING_AP,
+        "ap_reachable": ap_reachable,
+        "ap_ping_latency_ms": ap_latency,
         "internet_reachable": reachable,
         "ping_latency_ms": latency,
     }
@@ -311,6 +319,7 @@ CSV_FIELDS = [
     "signal_dbm", "noise_dbm", "snr_db", "tx_rate_mbps", "mcs_index",
     "security", "neighbor_count", "same_channel_neighbors",
     "rf_total_devices", "anonymous_devices", "bluetooth_device_count",
+    "ap_ping_target", "ap_reachable", "ap_ping_latency_ms",
     "internet_reachable", "ping_latency_ms",
 ]
 
@@ -419,13 +428,17 @@ def print_snapshot(snapshot, events):
     lat_str = f"{latency:.1f}ms" if latency is not None else "FAIL"
     ping_icon = "OK" if ping_ok else "FAIL"
 
+    ap_lat = snapshot.get("ap_ping_latency_ms")
+    ap_ok = snapshot.get("ap_reachable")
+    ap_str = f"{ap_lat:.1f}ms" if ap_lat is not None else ("FAIL" if ap_ok is not None else "-")
+
     line = (
         f"[{snapshot['timestamp']}] "
         f"{status:>12} | {ssid:<16} | ch{ch:>4} {band:>5} | "
         f"sig={sig_str:>4} noise={noise_str:>4} SNR={snr_str:>3} | "
         f"tx={tx_str:>4}Mbps | "
         f"nbr={neighbors:>2}(same_ch={same_ch}) rf={rf_total} anon={anon} bt={bt_count} | "
-        f"inet={ping_icon} {lat_str}"
+        f"ap={ap_str} inet={ping_icon} {lat_str}"
     )
     print(line)
 
@@ -441,7 +454,12 @@ def main():
                         help=f"Log output directory (default: {DEFAULT_LOG_DIR})")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="Suppress terminal output (log only)")
+    parser.add_argument("--ap", default=None,
+                        help="AP/gateway IP for local ping analysis, e.g. 192.168.1.10")
     args = parser.parse_args()
+
+    global PING_AP
+    PING_AP = args.ap
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -452,6 +470,7 @@ def main():
     print(f"  Interval : {args.interval}s")
     print(f"  Log dir  : {args.log_dir}")
     print(f"  Ping test: {PING_TARGET}")
+    print(f"  AP ping  : {PING_AP or 'disabled (use --ap 192.168.1.10)'}")
     scanner_ok = os.path.isfile(SCANNER_PATH)
     print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled (wifi_scanner not found, run: swiftc -framework CoreWLAN -framework Foundation wifi_scanner.swift -o wifi_scanner)'}")
     print(f"  BT scan  : enabled")

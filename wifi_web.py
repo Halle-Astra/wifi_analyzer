@@ -23,6 +23,7 @@ from urllib.parse import urlparse, parse_qs
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(SCRIPT_DIR, "static")
 sys.path.insert(0, SCRIPT_DIR)
+import wifi_monitor as monitor_mod
 from wifi_monitor import (
     collect_snapshot, detect_events, write_csv_row, write_json_line,
     ensure_log_dir, now, SCANNER_PATH,
@@ -82,6 +83,8 @@ def sampler_loop(interval, log_dir):
                 "anonymous_devices": snapshot.get("anonymous_devices"),
                 "bluetooth_device_count": snapshot.get("bluetooth_device_count"),
                 "channel": snapshot.get("channel"),
+                "ap_reachable": snapshot.get("ap_reachable"),
+                "ap_ping_latency_ms": snapshot.get("ap_ping_latency_ms"),
             })
             for ev in events:
                 state.events.append({
@@ -178,7 +181,11 @@ def main():
                         help=f"Sampling interval in seconds (default: {DEFAULT_INTERVAL})")
     parser.add_argument("-d", "--log-dir", default=DEFAULT_LOG_DIR,
                         help=f"Log output directory (default: {DEFAULT_LOG_DIR})")
+    parser.add_argument("--ap", default=None,
+                        help="AP/gateway IP for local ping analysis, e.g. 192.168.1.10")
     args = parser.parse_args()
+
+    monitor_mod.PING_AP = args.ap
 
     def handle_sig(signum, frame):
         state.running = False
@@ -191,6 +198,7 @@ def main():
     print(f"  Port     : {args.port}")
     print(f"  Interval : {args.interval}s")
     print(f"  Log dir  : {args.log_dir}")
+    print(f"  AP ping  : {args.ap or 'disabled (use --ap 192.168.1.10)'}")
     print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
     print(f"  Dashboard: http://localhost:{args.port}")
 

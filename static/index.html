@@ -327,8 +327,22 @@ function makeChart(wrap, cfg){
       });
     }
   });
+  // Hover overlay: vertical line + highlight dots
+  svg+=`<line id="__crosshair" x1="0" y1="${marginT}" x2="0" y2="${marginT+plotH}" stroke="rgba(255,255,255,.3)" stroke-width="1" stroke-dasharray="4 3" style="display:none"/>`;
+  const seriesScales=[];
+  cfg.series.forEach(s=>{
+    const vals2=data.map(d=>d[s.key]??null);
+    const nums2=vals2.filter(v=>v!=null);
+    if(!nums2.length) return;
+    let al=s.min!=null?s.min:Math.min(...nums2), ah=s.max!=null?s.max:Math.max(...nums2);
+    cfg.series.filter(ss=>(!!ss.axis&&ss.axis==='right')===(!!s.axis&&s.axis==='right')).forEach(ss=>{
+      const sv3=data.map(d=>d[ss.key]??null).filter(v=>v!=null);
+      if(sv3.length){al=Math.min(al,ss.min!=null?ss.min:Math.min(...sv3));ah=Math.max(ah,ss.max!=null?ss.max:Math.max(...sv3));}
+    });
+    seriesScales.push({key:s.key, color:s.color, lo:al, hi:ah, range:ah-al||1});
+    svg+=`<circle class="__dot" r="5" fill="${s.color}" stroke="#fff" stroke-width="1.5" style="display:none"/>`;
+  });
   svg+='</svg>';
-  const card=wrap.closest('.card')||wrap.parentElement;
   let tip=card.querySelector('.chart-tip');
   if(!tip){tip=document.createElement('div');tip.className='spec-tooltip chart-tip';card.appendChild(tip);}
   wrap.innerHTML=svg;
@@ -341,17 +355,42 @@ function makeChart(wrap, cfg){
     const H=cfg.height||220;
     const plotLeft=marginL/W*rect.width, plotRight=(W-marginR)/W*rect.width;
     const plotTop=marginT/H*rect.height, plotBottom=(marginT+plotH)/H*rect.height;
-    if(px<plotLeft||px>plotRight||py<plotTop||py>plotBottom){tip.style.display='none';return;}
+    const crosshair=svgEl.querySelector('#__crosshair');
+    const dots=svgEl.querySelectorAll('.__dot');
+    if(px<plotLeft||px>plotRight||py<plotTop||py>plotBottom){
+      tip.style.display='none';
+      if(crosshair) crosshair.style.display='none';
+      dots.forEach(d=>d.style.display='none');
+      return;
+    }
     const frac=(px-plotLeft)/(plotRight-plotLeft);
     const idx=Math.round(frac*(data.length-1));
-    if(idx<0||idx>=data.length){tip.style.display='none';return;}
+    if(idx<0||idx>=data.length){
+      tip.style.display='none';
+      if(crosshair) crosshair.style.display='none';
+      dots.forEach(d=>d.style.display='none');
+      return;
+    }
     const d=data[idx];
     const ts=d[cfg.xKey||'timestamp']||'';
+    const svgX=marginL+idx/(data.length-1||1)*plotW;
+    if(crosshair){
+      crosshair.setAttribute('x1',svgX);
+      crosshair.setAttribute('x2',svgX);
+      crosshair.style.display='';
+    }
     let html=`<div class="ttl">${esc(ts)}</div>`;
-    cfg.series.forEach(s=>{
-      const v=d[s.key];
-      if(v==null) return;
-      html+=`<div class="itm" style="color:${s.color}"><b>${esc(s.key)}</b> ${typeof v==='number'?v.toFixed(s.decimals??1):v} ${esc(s.unit||'')}</div>`;
+    seriesScales.forEach((sc,si)=>{
+      const v=d[sc.key];
+      const dot=dots[si];
+      if(v==null){
+        if(dot) dot.style.display='none';
+        return;
+      }
+      const dotY=marginT+plotH-(v-sc.lo)/sc.range*plotH;
+      if(dot){dot.setAttribute('cx',svgX);dot.setAttribute('cy',dotY);dot.style.display='';}
+      const s=cfg.series.find(ss=>ss.key===sc.key);
+      html+=`<div class="itm" style="color:${sc.color}"><b>${esc(sc.key)}</b> ${typeof v==='number'?v.toFixed(s?.decimals??1):v} ${esc(s?.unit||'')}</div>`;
     });
     tip.innerHTML=html;
     tip.style.display='block';
@@ -362,7 +401,12 @@ function makeChart(wrap, cfg){
     tip.style.left=Math.max(10,tx)+'px';
     tip.style.top=Math.max(10,ty)+'px';
   });
-  svgEl.addEventListener('mouseleave',()=>{tip.style.display='none';});
+  svgEl.addEventListener('mouseleave',()=>{
+    tip.style.display='none';
+    const crosshair=svgEl.querySelector('#__crosshair');
+    if(crosshair) crosshair.style.display='none';
+    svgEl.querySelectorAll('.__dot').forEach(d=>d.style.display='none');
+  });
 }
 function pickLabels(arr,n){
   if(arr.length<=n) return arr.map((v,i)=>[i,hm(v)]);

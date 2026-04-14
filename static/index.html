@@ -326,7 +326,41 @@ function makeChart(wrap, cfg){
     }
   });
   svg+='</svg>';
+  const card=wrap.closest('.card')||wrap.parentElement;
+  let tip=card.querySelector('.chart-tip');
+  if(!tip){tip=document.createElement('div');tip.className='spec-tooltip chart-tip';card.appendChild(tip);}
   wrap.innerHTML=svg;
+  const svgEl=wrap.querySelector('svg');
+  if(!svgEl) return;
+  svgEl.addEventListener('mousemove',e=>{
+    const rect=svgEl.getBoundingClientRect();
+    const px=e.clientX-rect.left;
+    const py=e.clientY-rect.top;
+    const H=cfg.height||220;
+    const plotLeft=marginL/W*rect.width, plotRight=(W-marginR)/W*rect.width;
+    const plotTop=marginT/H*rect.height, plotBottom=(marginT+plotH)/H*rect.height;
+    if(px<plotLeft||px>plotRight||py<plotTop||py>plotBottom){tip.style.display='none';return;}
+    const frac=(px-plotLeft)/(plotRight-plotLeft);
+    const idx=Math.round(frac*(data.length-1));
+    if(idx<0||idx>=data.length){tip.style.display='none';return;}
+    const d=data[idx];
+    const ts=d[cfg.xKey||'timestamp']||'';
+    let html=`<div class="ttl">${esc(ts)}</div>`;
+    cfg.series.forEach(s=>{
+      const v=d[s.key];
+      if(v==null) return;
+      html+=`<div class="itm" style="color:${s.color}"><b>${esc(s.key)}</b> ${typeof v==='number'?v.toFixed(s.decimals??1):v} ${esc(s.unit||'')}</div>`;
+    });
+    tip.innerHTML=html;
+    tip.style.display='block';
+    const cr=card.getBoundingClientRect();
+    let tx=e.clientX-cr.left+16, ty=e.clientY-cr.top+16;
+    if(tx+300>cr.width) tx=e.clientX-cr.left-310;
+    if(ty+150>cr.height) ty=e.clientY-cr.top-160;
+    tip.style.left=Math.max(10,tx)+'px';
+    tip.style.top=Math.max(10,ty)+'px';
+  });
+  svgEl.addEventListener('mouseleave',()=>{tip.style.display='none';});
 }
 function pickLabels(arr,n){
   if(arr.length<=n) return arr.map((v,i)=>[i,hm(v)]);

@@ -338,15 +338,17 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
   const currentNames=new Set([snapshot.ssid||'']);
   const baseChannels=bandLabel==='2.4GHz' ? [1,2,3,4,5,6,7,8,9,10,11,12,13] : [36,40,44,48,52,56,60,64,149,153,157,161,165];
+  const basePositions=bandLabel==='2.4GHz' ? [0,1,2,3,4,5,6,7,8,9,10,11,12] : [0,1,2,3,4,5,6,7,11,12,13,14,15];
   const zoom=spectrumZoom[bandLabel];
-  const slotMin=zoom ? Math.max(0, zoom.slotMin) : 0;
-  const slotMax=zoom ? Math.min(baseChannels.length-1, zoom.slotMax) : baseChannels.length-1;
+  const posMin=zoom ? Math.max(basePositions[0], zoom.posMin) : basePositions[0];
+  const posMax=zoom ? Math.min(basePositions[basePositions.length-1], zoom.posMax) : basePositions[basePositions.length-1];
   const rssiTop=zoom ? Math.min(-20, zoom.rssiTop) : -20;
   const rssiBottom=-100;
-  const slotRange=Math.max(0.5, slotMax-slotMin);
+  const posRange=Math.max(0.5, posMax-posMin);
   const rssiRange=rssiTop-rssiBottom||1;
-  const chToSlot=ch=>baseChannels.indexOf(Number(ch));
-  const xSlot=slot=>marginL+Math.max(0,Math.min(1,(slot-slotMin)/slotRange))*plotW;
+  const chToIndex=ch=>baseChannels.indexOf(Number(ch));
+  const chToPos=ch=>{ const idx=chToIndex(ch); return idx>=0 ? basePositions[idx] : -1; };
+  const xPos=pos=>marginL+Math.max(0,Math.min(1,(pos-posMin)/posRange))*plotW;
   const yFor=rssi=>marginT+plotH-((rssi-rssiBottom)/rssiRange)*plotH;
   const rssiFromY=svgY=>rssiBottom+(1-(svgY-marginT)/plotH)*rssiRange;
   const collectNets=(src, snap)=>{
@@ -356,9 +358,9 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
       items.forEach(net=>{
         const band=(net.band||'').replace('2GHz','2.4GHz');
         if(band.includes(bandLabel)){
-          const slot=chToSlot(ch);
+          const pos=chToPos(ch);
           const span=widthToSpan(net.width, net.band);
-          if(slot>=0 && slot+span/2>=slotMin && slot-span/2<=slotMax)
+          if(pos>=0 && pos+span/2>=posMin && pos-span/2<=posMax)
             result.push({...net, channel:Number(ch), _src:src, _ts:snap.timestamp||''});
         }
       });
@@ -376,17 +378,23 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     svg+=`<text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${r}</text>`;
   }
   baseChannels.forEach((ch,idx)=>{
-    if(idx<slotMin-0.5||idx>slotMax+0.5) return;
-    const x=xSlot(idx);
+    const pos=basePositions[idx];
+    if(pos<posMin-0.5||pos>posMax+0.5) return;
+    const x=xPos(pos);
     svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/>`;
     svg+=`<text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="10" text-anchor="middle">${ch}</text>`;
   });
+  if(bandLabel==='5GHz' && posMin<9 && posMax>9){
+    const gapL=xPos(8), gapR=xPos(10);
+    svg+=`<rect x="${gapL}" y="${marginT}" width="${gapR-gapL}" height="${plotH}" fill="rgba(255,255,255,.02)" rx="4"/>`;
+    svg+=`<text x="${(gapL+gapR)/2}" y="${marginT+plotH/2+4}" fill="rgba(255,255,255,.12)" font-size="11" text-anchor="middle">⋯</text>`;
+  }
   svg+=`<text x="6" y="${marginT-6}" fill="var(--muted)" font-size="10">RSSI(dBm)</text>`;
   allNets.forEach((net,idx)=>{
-    const slot=chToSlot(net.channel); if(slot<0) return;
+    const pos=chToPos(net.channel); if(pos<0) return;
     const rssi=net.rssi!=null?net.rssi:-75;
     const span=widthToSpan(net.width, net.band);
-    const x0=xSlot(slot-span/2), x1=xSlot(slot), x2=xSlot(slot+span/2);
+    const x0=xPos(pos-span/2), x1=xPos(pos), x2=xPos(pos+span/2);
     const yBase=yFor(rssiBottom), yPeak=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi)));
     const yShoulder=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi-10)));
     const color=net._dashed?'rgba(255,255,255,.22)':netColor(net,currentNames);
@@ -410,6 +418,7 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   const svgEl=wrap.querySelector('svg');
   let dragStart=null;
   const pxToSvg=(px,py,rect)=>({sx:px/rect.width*W, sy:py/rect.height*H});
+  const svgXToPos=svgX=>posMin+((svgX-marginL)/plotW)*posRange;
   const plotBounds=rect=>({
     l:marginL/W*rect.width, r:(W-marginR)/W*rect.width,
     t:marginT/H*rect.height, b:(marginT+plotH)/H*rect.height
@@ -438,10 +447,10 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     const sv=pxToSvg(px,py,rect);
     const hits=[];
     allNets.forEach(net=>{
-      const slot=chToSlot(net.channel); if(slot<0)return;
+      const pos=chToPos(net.channel); if(pos<0)return;
       const rssi=net.rssi!=null?net.rssi:-75;
       const span=widthToSpan(net.width,net.band);
-      const xl=xSlot(slot-span/2),xr=xSlot(slot+span/2);
+      const xl=xPos(pos-span/2),xr=xPos(pos+span/2);
       const yp=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi))),yb=yFor(rssiBottom);
       if(sv.sx>=xl&&sv.sx<=xr&&sv.sy>=yp&&sv.sy<=yb) hits.push(net);
     });
@@ -484,12 +493,13 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     sel.style.display='none';
     if(Math.abs(x1-x0)>15){
       const sv0=pxToSvg(x0,0,rect), sv1=pxToSvg(x1,0,rect), svTop=pxToSvg(0,topPx,rect);
-      const newSlotMin=slotMin+((sv0.sx-marginL)/plotW)*slotRange;
-      const newSlotMax=slotMin+((sv1.sx-marginL)/plotW)*slotRange;
+      const newPosMin=svgXToPos(sv0.sx);
+      const newPosMax=svgXToPos(sv1.sx);
       const newRssiTop=rssiFromY(svTop.sy);
+      const pFirst=basePositions[0], pLast=basePositions[basePositions.length-1];
       spectrumZoom[bandLabel]={
-        slotMin:Math.max(0,Math.min(baseChannels.length-1,newSlotMin)),
-        slotMax:Math.max(0,Math.min(baseChannels.length-1,newSlotMax)),
+        posMin:Math.max(pFirst, Math.min(pLast, newPosMin)),
+        posMax:Math.max(pFirst, Math.min(pLast, newPosMax)),
         rssiTop:Math.max(-95,Math.min(-20,newRssiTop)),
       };
       triggerSliderUpdate();

@@ -158,10 +158,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/debug-log":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            import datetime as _dt
+            with open("/tmp/wifi_web_debug.log", "a") as fh:
+                fh.write(f"[{_dt.datetime.now().strftime('%H:%M:%S.%f')}] {body}\n")
+            self._json_response({"ok": True})
+        else:
+            self.send_error(404)
 
 def main():
     parser = argparse.ArgumentParser(description="WiFi Monitor Web UI")

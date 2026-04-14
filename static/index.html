@@ -160,6 +160,15 @@ nav .ts{font-size:12px;color:var(--muted)}
 const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 async function api(path){ return (await fetch(path,{cache:'no-store'})).json(); }
 function hm(ts){ if(!ts) return ''; const p=ts.split(' '); return p.length>1?p[1].slice(0,5):ts; }
+function debugLog(obj){
+  try{
+    fetch('/api/debug-log',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(obj)
+    }).catch(()=>{});
+  }catch(_e){}
+}
 
 /* ===== SPA ROUTER ===== */
 const pages = document.querySelectorAll('.page');
@@ -430,9 +439,11 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     const rect=svgEl.getBoundingClientRect();
     const b=plotBounds(rect);
     const px=e.clientX-rect.left, py=e.clientY-rect.top;
-    if(px<b.l||px>b.r||py<b.t||py>b.b) return;
+    if(px<b.l||px>b.r||py<b.t||py>b.b){ debugLog({event:'mousedown_ignored', band:bandLabel, px:px.toFixed(1), py:py.toFixed(1), bounds:b}); return; }
     const c=clampPlot(px,py,b);
-    dragStart={x:c.x, y:c.y, bounds:b};
+    dragStart={x:c.x, y:c.y, bounds:b, rect:rect};
+    specDragging=true;
+    debugLog({event:'mousedown', band:bandLabel, px:px.toFixed(1), py:py.toFixed(1), clampedX:c.x.toFixed(1), clampedY:c.y.toFixed(1), plotBounds:{l:b.l.toFixed(1),r:b.r.toFixed(1),t:b.t.toFixed(1),b:b.b.toFixed(1)}, rectW:rect.width.toFixed(1), rectH:rect.height.toFixed(1)});
     sel.style.display='block';sel.style.left=c.x+'px';sel.style.top=c.y+'px';sel.style.width='0px';sel.style.height=(b.b-c.y)+'px';
     window.addEventListener('mousemove',onWinMove);
     window.addEventListener('mouseup',onWinUp);
@@ -474,7 +485,7 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
 
   const onWinMove=e=>{
     if(!dragStart) return;
-    const rect=svgEl.getBoundingClientRect();
+    const rect=dragStart.rect;
     const b=dragStart.bounds;
     const c=clampPlot(e.clientX-rect.left, e.clientY-rect.top, b);
     const x=Math.min(dragStart.x,c.x), top2=Math.min(dragStart.y,c.y);
@@ -485,7 +496,7 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   };
   const onWinUp=e=>{
     if(!dragStart) return;
-    const rect=svgEl.getBoundingClientRect();
+    const rect=dragStart.rect;
     const b=dragStart.bounds;
     const c=clampPlot(e.clientX-rect.left, e.clientY-rect.top, b);
     const x0=Math.min(dragStart.x,c.x), x1=Math.max(dragStart.x,c.x);
@@ -497,14 +508,42 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
       const newPosMax=svgXToPos(sv1.sx);
       const newRssiTop=rssiFromY(svTop.sy);
       const pFirst=basePositions[0], pLast=basePositions[basePositions.length-1];
+      let adjMin=Math.max(pFirst, Math.min(pLast, newPosMin));
+      let adjMax=Math.max(pFirst, Math.min(pLast, newPosMax));
+      const insidePos=basePositions.filter(p=>p>=adjMin-1 && p<=adjMax+1);
+      if(insidePos.length>0){
+        adjMin=Math.min(adjMin, Math.min(...insidePos)-0.5);
+        adjMax=Math.max(adjMax, Math.max(...insidePos)+0.5);
+      } else {
+        const nearest=basePositions.reduce((best,p)=>Math.abs(p-(adjMin+adjMax)/2)<Math.abs(best-(adjMin+adjMax)/2)?p:best, basePositions[0]);
+        adjMin=nearest-1; adjMax=nearest+1;
+      }
+      adjMin=Math.max(pFirst-0.5, adjMin);
+      adjMax=Math.min(pLast+0.5, adjMax);
+      const finalPosMin=adjMin;
+      const finalPosMax=adjMax;
+      const finalRssiTop=Math.max(-95,Math.min(-20,newRssiTop));
+      debugLog({
+        event:'zoom', band:bandLabel,
+        dragStartX:dragStart.x.toFixed(1), dragStartY:dragStart.y.toFixed(1),
+        endX:c.x.toFixed(1), endY:c.y.toFixed(1),
+        x0px:x0.toFixed(1), x1px:x1.toFixed(1), topPx:topPx.toFixed(1),
+        sv0sx:sv0.sx.toFixed(2), sv1sx:sv1.sx.toFixed(2), svTopsy:svTop.sy.toFixed(2),
+        newPosMin:newPosMin.toFixed(3), newPosMax:newPosMax.toFixed(3),
+        finalPosMin:finalPosMin.toFixed(3), finalPosMax:finalPosMax.toFixed(3),
+        finalRssiTop:finalRssiTop.toFixed(1),
+        currentZoom:{posMin, posMax, posRange, rssiTop, rssiBottom},
+        W, marginL, plotW,
+      });
       spectrumZoom[bandLabel]={
-        posMin:Math.max(pFirst, Math.min(pLast, newPosMin)),
-        posMax:Math.max(pFirst, Math.min(pLast, newPosMax)),
-        rssiTop:Math.max(-95,Math.min(-20,newRssiTop)),
+        posMin:finalPosMin,
+        posMax:finalPosMax,
+        rssiTop:finalRssiTop,
       };
       triggerSliderUpdate();
     }
     dragStart=null;
+    specDragging=false;
     window.removeEventListener('mousemove',onWinMove);
     window.removeEventListener('mouseup',onWinUp);
   };
@@ -567,6 +606,7 @@ let fullSnapshots=[];
 let compareIndex=null;
 let userDragging=false;
 let autoRefresh=true;
+let specDragging=false;
 const spectrumZoom={
   '2.4GHz': null,
   '5GHz': null,
@@ -591,13 +631,17 @@ function renderChannelsPage(cur, history){
     const selected=isLatest?cur:fullSnapshots[idx];
     const cmp=isLatest?null:fullSnapshots[idx];
     label.textContent=isLatest?'仅当前（拖左查看历史对比）':`${fullSnapshots[idx].timestamp||'历史'}（冻结视图）`;
-    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
-    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+    if(!specDragging){
+      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
+      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+    }
     cur=selected;
   } else {
     label.textContent='等待更多数据…';
-    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
-    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
+    if(!specDragging){
+      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
+      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
+    }
   }
   const cn=cur.channel_networks||{};
   const summaries=cur.rf_channel_summary||{};

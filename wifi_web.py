@@ -21,6 +21,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(SCRIPT_DIR, "static")
 sys.path.insert(0, SCRIPT_DIR)
 from wifi_monitor import (
     collect_snapshot, detect_events, write_csv_row, write_json_line,
@@ -110,13 +111,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _html_response(self, html):
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _file_response(self, filepath, content_type):
+        try:
+            with open(filepath, "rb") as fh:
+                body = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except FileNotFoundError:
+            self.send_error(404)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -138,316 +143,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(data)
 
         elif path == "/" or path == "/index.html":
-            self._html_response(DASHBOARD_HTML)
+            self._file_response(
+                os.path.join(STATIC_DIR, "index.html"),
+                "text/html; charset=utf-8",
+            )
 
         else:
             self.send_error(404)
-
-
-# ---------------------------------------------------------------------------
-# Dashboard HTML (inline)
-# ---------------------------------------------------------------------------
-
-DASHBOARD_HTML = """<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WiFi 实时监控面板</title>
-<style>
-:root {
-  --bg: #0b1020;
-  --panel: #121933;
-  --panel-2: #182245;
-  --text: #e8ecff;
-  --muted: #9aa6d1;
-  --ok: #21c77a;
-  --warn: #ffb020;
-  --bad: #ff5d73;
-  --line: #2a376b;
-  --accent: #68a0ff;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
-  background: linear-gradient(180deg, #0b1020, #0f1730);
-  color: var(--text);
-}
-.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-h1 { margin: 0 0 8px; font-size: 28px; }
-.sub { color: var(--muted); margin-bottom: 18px; }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 14px;
-}
-.card {
-  background: rgba(18, 25, 51, 0.95);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
-}
-.kpi { grid-column: span 3; }
-.wide { grid-column: span 6; }
-.full { grid-column: span 12; }
-.title { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
-.value { font-size: 30px; font-weight: 700; }
-.small { font-size: 12px; color: var(--muted); }
-.ok { color: var(--ok); }
-.warn { color: var(--warn); }
-.bad { color: var(--bad); }
-.row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(42, 55, 107, 0.45);
-}
-.row:last-child { border-bottom: 0; }
-.list {
-  max-height: 360px;
-  overflow: auto;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
-}
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.channel {
-  border: 1px solid rgba(104, 160, 255, 0.18);
-  border-radius: 12px;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: rgba(255, 255, 255, 0.02);
-}
-.channel.mine { border-color: rgba(33, 199, 122, 0.45); }
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  margin-left: 8px;
-}
-.dot {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  margin-right: 6px;
-}
-.chart {
-  width: 100%;
-  height: 190px;
-  display: block;
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 10px;
-}
-.header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: end;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-@media (max-width: 1100px) {
-  .kpi, .wide { grid-column: span 6; }
-}
-@media (max-width: 760px) {
-  .kpi, .wide, .full { grid-column: span 12; }
-  .value { font-size: 24px; }
-}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="header-row">
-    <div>
-      <h1>WiFi 实时监控面板</h1>
-      <div class="sub">实时看连接状态、信道竞争、匿名 RF 设备、蓝牙干扰源</div>
-    </div>
-    <div class="small">最后更新：<span id="updated">-</span></div>
-  </div>
-
-  <div class="grid">
-    <div class="card kpi"><div class="title">当前网络</div><div class="value" id="ssid">-</div><div class="small" id="status">-</div></div>
-    <div class="card kpi"><div class="title">信道 / 带宽</div><div class="value" id="channel">-</div><div class="small" id="phy">-</div></div>
-    <div class="card kpi"><div class="title">信号 / SNR</div><div class="value" id="signal">-</div><div class="small" id="noise">-</div></div>
-    <div class="card kpi"><div class="title">网络连通性</div><div class="value" id="internet">-</div><div class="small" id="latency">-</div></div>
-
-    <div class="card wide">
-      <div class="title">实时趋势</div>
-      <svg id="chart" class="chart" viewBox="0 0 800 190" preserveAspectRatio="none"></svg>
-      <div class="small">绿色：RSSI　蓝色：同信道竞争数　红色：匿名设备数</div>
-    </div>
-
-    <div class="card wide">
-      <div class="title">概览</div>
-      <div class="row"><span>可见命名网络</span><strong id="neighborCount">-</strong></div>
-      <div class="row"><span>同信道竞争</span><strong id="sameChannel">-</strong></div>
-      <div class="row"><span>RF 总设备数</span><strong id="rfTotal">-</strong></div>
-      <div class="row"><span>匿名 / 隐藏设备</span><strong id="anonTotal">-</strong></div>
-      <div class="row"><span>蓝牙设备数</span><strong id="btTotal">-</strong></div>
-      <div class="row"><span>TX 速率</span><strong id="txRate">-</strong></div>
-    </div>
-
-    <div class="card wide">
-      <div class="title">最近事件</div>
-      <div class="list" id="events"></div>
-    </div>
-
-    <div class="card wide">
-      <div class="title">蓝牙设备（2.4GHz 潜在干扰源）</div>
-      <div class="list" id="bluetooth"></div>
-    </div>
-
-    <div class="card full">
-      <div class="title">各信道设备明细</div>
-      <div id="channels"></div>
-    </div>
-  </div>
-</div>
-
-<script>
-const els = {
-  updated: document.getElementById('updated'),
-  ssid: document.getElementById('ssid'),
-  status: document.getElementById('status'),
-  channel: document.getElementById('channel'),
-  phy: document.getElementById('phy'),
-  signal: document.getElementById('signal'),
-  noise: document.getElementById('noise'),
-  internet: document.getElementById('internet'),
-  latency: document.getElementById('latency'),
-  neighborCount: document.getElementById('neighborCount'),
-  sameChannel: document.getElementById('sameChannel'),
-  rfTotal: document.getElementById('rfTotal'),
-  anonTotal: document.getElementById('anonTotal'),
-  btTotal: document.getElementById('btTotal'),
-  txRate: document.getElementById('txRate'),
-  events: document.getElementById('events'),
-  bluetooth: document.getElementById('bluetooth'),
-  channels: document.getElementById('channels'),
-  chart: document.getElementById('chart'),
-};
-
-async function fetchJSON(url) {
-  const response = await fetch(url, { cache: 'no-store' });
-  return response.json();
-}
-
-function statusClass(ok) { return ok ? 'ok' : 'bad'; }
-function esc(text) {
-  return String(text ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-}
-
-function renderCurrent(data) {
-  els.updated.textContent = data.timestamp || '-';
-  els.ssid.textContent = data.ssid || '(未连接)';
-  els.status.innerHTML = `<span class="${data.status === 'connected' ? 'ok' : 'bad'}">${esc(data.status || '-')}</span>`;
-  els.channel.textContent = data.channel ? `ch ${data.channel}` : '-';
-  els.phy.textContent = `${data.band || ''} ${data.width || ''} ${data.phy_mode || ''}`.trim() || '-';
-  els.signal.textContent = data.signal_dbm != null ? `${data.signal_dbm} dBm` : '-';
-  els.noise.textContent = `noise ${data.noise_dbm ?? '-'} / SNR ${data.snr_db ?? '-'}`;
-  els.internet.innerHTML = `<span class="${statusClass(!!data.internet_reachable)}">${data.internet_reachable ? '可达' : '失败'}</span>`;
-  els.latency.textContent = data.ping_latency_ms != null ? `${data.ping_latency_ms.toFixed(1)} ms` : '-';
-  els.neighborCount.textContent = data.neighbor_count ?? '-';
-  els.sameChannel.textContent = data.same_channel_neighbors ?? '-';
-  els.rfTotal.textContent = data.rf_total_devices ?? '-';
-  els.anonTotal.textContent = data.anonymous_devices ?? '-';
-  els.btTotal.textContent = data.bluetooth_device_count ?? '-';
-  els.txRate.textContent = data.tx_rate_mbps != null ? `${data.tx_rate_mbps} Mbps` : '-';
-}
-
-function renderEvents(items) {
-  const recent = items.slice(-20).reverse();
-  els.events.innerHTML = recent.length ? recent.map(item =>
-    `<div class="row"><span class="mono">${esc(item.timestamp)}</span><strong>${esc(item.type)}</strong><span class="small">${esc(item.detail)}</span></div>`
-  ).join('') : '<div class="row"><span>暂无事件</span></div>';
-}
-
-function renderBluetooth(devices) {
-  els.bluetooth.innerHTML = devices.length ? devices.map(device => {
-    const name = esc(device.name || '(unknown)');
-    const type = esc(device.type || '');
-    const rssi = device.rssi ? ` RSSI=${esc(device.rssi)}` : '';
-    const state = device.connected ? '已连接' : '已配对';
-    return `<div class="row"><span>${name}</span><span class="small">${state} ${type}${rssi}</span></div>`;
-  }).join('') : '<div class="row"><span>未发现蓝牙设备</span></div>';
-}
-
-function renderChannels(data) {
-  const channelNetworks = data.channel_networks || {};
-  const summaries = data.rf_channel_summary || {};
-  const myChannel = String(data.channel ?? '');
-  const keys = Object.keys(channelNetworks).sort((a, b) => Number(a) - Number(b));
-  els.channels.innerHTML = keys.length ? keys.map(key => {
-    const networks = channelNetworks[key] || [];
-    const summary = summaries[key] || summaries[Number(key)] || {};
-    const named = networks.filter(item => !item.anonymous);
-    const anonymous = networks.filter(item => item.anonymous);
-    const mine = key === myChannel;
-    const rssiPart = summary.rssi_min != null ? `RSSI ${summary.rssi_min} ~ ${summary.rssi_max} dBm` : '';
-    return `
-      <div class="channel ${mine ? 'mine' : ''}">
-        <div><strong>信道 ${esc(key)}</strong>${mine ? '<span class="badge">当前信道</span>' : ''}<span class="badge">命名 ${named.length}</span><span class="badge">匿名 ${anonymous.length}</span>${rssiPart ? `<span class="badge">${esc(rssiPart)}</span>` : ''}</div>
-        <div class="small" style="margin:10px 0 6px;">${named.concat(anonymous).map(net => {
-          const name = net.anonymous ? '(anonymous RF)' : (net.ssid || '(hidden SSID)');
-          const meta = [net.band, net.width, net.phy_mode, net.rssi != null ? `RSSI=${net.rssi}` : ''].filter(Boolean).join(' · ');
-          return `<div class="row"><span>${esc(name)}</span><span class="small">${esc(meta)}</span></div>`;
-        }).join('')}</div>
-      </div>`;
-  }).join('') : '<div class="row"><span>暂无信道数据</span></div>';
-}
-
-function renderChart(history) {
-  const svg = els.chart;
-  const width = 800, height = 190, pad = 18;
-  if (!history.length) {
-    svg.innerHTML = '';
-    return;
-  }
-  const xs = history.map((_, index) => pad + (index * (width - pad * 2)) / Math.max(1, history.length - 1));
-  const signalVals = history.map(item => item.signal_dbm ?? -100);
-  const sameVals = history.map(item => item.same_channel_neighbors ?? 0);
-  const anonVals = history.map(item => item.anonymous_devices ?? 0);
-  const sigMin = Math.min(...signalVals), sigMax = Math.max(...signalVals);
-  const maxCount = Math.max(1, ...sameVals, ...anonVals);
-  const scaleSignal = value => height - pad - ((value - sigMin) / Math.max(1, sigMax - sigMin || 1)) * (height - pad * 2);
-  const scaleCount = value => height - pad - (value / maxCount) * (height - pad * 2);
-  const pathFor = (vals, scaler) => vals.map((v, i) => `${i ? 'L' : 'M'} ${xs[i].toFixed(1)} ${scaler(v).toFixed(1)}`).join(' ');
-  const grid = [0.25, 0.5, 0.75].map(r => `<line x1="0" y1="${(height*r).toFixed(1)}" x2="${width}" y2="${(height*r).toFixed(1)}" stroke="rgba(255,255,255,.08)"/>`).join('');
-  svg.innerHTML = `${grid}
-    <path d="${pathFor(signalVals, scaleSignal)}" fill="none" stroke="#21c77a" stroke-width="3"/>
-    <path d="${pathFor(sameVals, scaleCount)}" fill="none" stroke="#68a0ff" stroke-width="2.5"/>
-    <path d="${pathFor(anonVals, scaleCount)}" fill="none" stroke="#ff5d73" stroke-width="2.5"/>
-  `;
-}
-
-async function refresh() {
-  try {
-    const [current, history, events] = await Promise.all([
-      fetchJSON('/api/current'),
-      fetchJSON('/api/history'),
-      fetchJSON('/api/events'),
-    ]);
-    renderCurrent(current);
-    renderEvents(events);
-    renderBluetooth(current.bluetooth_devices || []);
-    renderChannels(current);
-    renderChart(history);
-  } catch (error) {
-    console.error(error);
-  }
-}
-
-refresh();
-setInterval(refresh, 3000);
-</script>
-</body>
-</html>"""
 
 
 # ---------------------------------------------------------------------------

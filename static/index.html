@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi 监控面板</title>
+<style>
+:root{--bg:#0b1020;--panel:#121933;--panel2:#182245;--text:#e8ecff;--muted:#8a96c1;--ok:#21c77a;--warn:#ffb020;--bad:#ff5d73;--line:#232f5a;--accent:#68a0ff;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+/* NAV */
+nav{display:flex;align-items:center;gap:6px;padding:10px 24px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:90}
+nav .logo{font-size:17px;font-weight:700;margin-right:14px;white-space:nowrap}
+nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:6px 14px;border-radius:8px;transition:.15s}
+nav a:hover{color:var(--text);background:var(--panel2)}
+nav a.active{color:var(--text);background:var(--accent);color:#fff}
+nav .spacer{flex:1}
+nav .ts{font-size:12px;color:var(--muted)}
+/* LAYOUT */
+.page{display:none;padding:22px 24px;max-width:1440px;margin:0 auto}
+.page.active{display:block}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.c3{grid-column:span 3}.c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c12{grid-column:span 12}
+.sec{font-size:13px;color:var(--muted);margin-bottom:10px;font-weight:600}
+.val{font-size:28px;font-weight:700;line-height:1.2}
+.sm{font-size:12px;color:var(--muted)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.row{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid rgba(42,55,107,.35)}
+.row:last-child{border-bottom:0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.list{max-height:380px;overflow-y:auto;border-radius:8px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);margin-left:6px}
+.channel-box{border:1px solid rgba(104,160,255,.15);border-radius:var(--radius);padding:12px;margin-bottom:10px;background:rgba(255,255,255,.015)}
+.channel-box.mine{border-color:rgba(33,199,122,.4)}
+/* CHART */
+.chart-wrap{position:relative;background:rgba(255,255,255,.02);border-radius:var(--radius);overflow:hidden}
+.chart-wrap svg{display:block;width:100%}
+/* RESPONSIVE */
+@media(max-width:1100px){.c3,.c4{grid-column:span 6}.c8{grid-column:span 12}}
+@media(max-width:760px){.c3,.c4,.c6,.c8,.c12{grid-column:span 12}.val{font-size:22px}}
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">📡 WiFi Monitor</span>
+  <a href="#dashboard" class="active" data-page="dashboard">概览</a>
+  <a href="#signal" data-page="signal">信号</a>
+  <a href="#channels" data-page="channels">信道</a>
+  <a href="#events" data-page="events">事件</a>
+  <span class="spacer"></span>
+  <span class="ts" id="navTs">-</span>
+</nav>
+
+<!-- ===== PAGE: DASHBOARD ===== -->
+<div class="page active" id="p-dashboard">
+  <div class="grid">
+    <div class="card c3"><div class="sec">网络</div><div class="val" id="d-ssid">-</div><div class="sm" id="d-status">-</div></div>
+    <div class="card c3"><div class="sec">信道</div><div class="val" id="d-ch">-</div><div class="sm" id="d-phy">-</div></div>
+    <div class="card c3"><div class="sec">信号 / SNR</div><div class="val" id="d-sig">-</div><div class="sm" id="d-noise">-</div></div>
+    <div class="card c3"><div class="sec">连通性</div><div class="val" id="d-inet">-</div><div class="sm" id="d-lat">-</div></div>
+
+    <div class="card c8">
+      <div class="sec">实时趋势（左轴 dBm · 右轴 数量）</div>
+      <div class="chart-wrap" id="d-chart-wrap"></div>
+      <div class="sm" style="margin-top:6px">
+        <span style="color:#21c77a">■</span> RSSI&nbsp;&nbsp;
+        <span style="color:#68a0ff">■</span> 同信道竞争&nbsp;&nbsp;
+        <span style="color:#ff5d73">■</span> 匿名设备
+      </div>
+    </div>
+
+    <div class="card c4">
+      <div class="sec">概览</div>
+      <div class="row"><span>命名网络</span><strong id="d-nbr">-</strong></div>
+      <div class="row"><span>同信道竞争</span><strong id="d-same">-</strong></div>
+      <div class="row"><span>RF 设备总数</span><strong id="d-rf">-</strong></div>
+      <div class="row"><span>匿名设备</span><strong id="d-anon">-</strong></div>
+      <div class="row"><span>蓝牙设备</span><strong id="d-bt">-</strong></div>
+      <div class="row"><span>TX 速率</span><strong id="d-tx">-</strong></div>
+    </div>
+
+    <div class="card c6">
+      <div class="sec">最近事件</div>
+      <div class="list" id="d-events"></div>
+    </div>
+    <div class="card c6">
+      <div class="sec">蓝牙设备（2.4GHz 潜在干扰）</div>
+      <div class="list" id="d-blue"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE: SIGNAL ===== -->
+<div class="page" id="p-signal">
+  <div class="grid">
+    <div class="card c12"><div class="sec">信号强度 RSSI (dBm)</div><div class="chart-wrap" id="s-rssi-wrap"></div></div>
+    <div class="card c12"><div class="sec">信噪比 SNR (dB)</div><div class="chart-wrap" id="s-snr-wrap"></div></div>
+    <div class="card c12"><div class="sec">Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div></div>
+    <div class="card c12"><div class="sec">TX 速率 (Mbps)</div><div class="chart-wrap" id="s-tx-wrap"></div></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: CHANNELS ===== -->
+<div class="page" id="p-channels">
+  <div class="grid">
+    <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div></div>
+    <div class="card c12"><div class="sec">各信道设备明细</div><div id="ch-list"></div></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: EVENTS ===== -->
+<div class="page" id="p-events">
+  <div class="grid">
+    <div class="card c12"><div class="sec">事件时间轴</div><div class="chart-wrap" id="ev-timeline-wrap"></div></div>
+    <div class="card c12"><div class="sec">完整事件列表</div><div class="list" id="ev-list" style="max-height:600px"></div></div>
+  </div>
+</div>
+
+<script>
+/* ===== UTILS ===== */
+const esc = t => String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+async function api(path){ return (await fetch(path,{cache:'no-store'})).json(); }
+function hm(ts){ if(!ts) return ''; const p=ts.split(' '); return p.length>1?p[1].slice(0,5):ts; }
+
+/* ===== SPA ROUTER ===== */
+const pages = document.querySelectorAll('.page');
+const navLinks = document.querySelectorAll('nav a[data-page]');
+function go(name){
+  pages.forEach(p=>p.classList.toggle('active',p.id==='p-'+name));
+  navLinks.forEach(a=>a.classList.toggle('active',a.dataset.page===name));
+}
+navLinks.forEach(a=>a.addEventListener('click',e=>{e.preventDefault();go(a.dataset.page);history.replaceState(null,'','#'+a.dataset.page)}));
+window.addEventListener('hashchange',()=>go(location.hash.slice(1)||'dashboard'));
+if(location.hash) go(location.hash.slice(1));
+
+/* ===== CHART ENGINE ===== */
+function makeChart(wrap, cfg){
+  const W=900, marginL=56, marginR=cfg.rightAxis?50:14, marginT=18, marginB=38;
+  const plotW=W-marginL-marginR, plotH=(cfg.height||220)-marginT-marginB;
+  const data=cfg.data, xKey=cfg.xKey||'timestamp';
+  if(!data.length){wrap.innerHTML='<div class="sm" style="padding:40px;text-align:center">等待数据…</div>';return}
+  let svg=`<svg viewBox="0 0 ${W} ${cfg.height||220}" preserveAspectRatio="xMidYMid meet" style="height:${cfg.height||220}px">`;
+  // grid
+  for(let r=0;r<=4;r++){const y=marginT+plotH*r/4;svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.06)"/>`;}
+  // X axis labels
+  const xLabels=pickLabels(data.map(d=>d[xKey]),6);
+  xLabels.forEach(([idx,label])=>{
+    const x=marginL+idx/(data.length-1||1)*plotW;
+    svg+=`<text x="${x}" y="${marginT+plotH+22}" fill="var(--muted)" font-size="11" text-anchor="middle">${esc(label)}</text>`;
+    svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/>`;
+  });
+  // series
+  cfg.series.forEach(s=>{
+    const vals=data.map(d=>d[s.key]??null);
+    const nums=vals.filter(v=>v!=null);
+    if(!nums.length) return;
+    const lo=s.min!=null?s.min:Math.min(...nums), hi=s.max!=null?s.max:Math.max(...nums);
+    const range=hi-lo||1;
+    // Y axis labels (left or right)
+    const isRight=!!s.axis&&s.axis==='right';
+    for(let r=0;r<=4;r++){
+      const v=hi-(hi-lo)*r/4;
+      const x=isRight?W-marginR+8:marginL-8;
+      const anchor=isRight?'start':'end';
+      svg+=`<text x="${x}" y="${marginT+plotH*r/4+4}" fill="${s.color}" font-size="10" text-anchor="${anchor}">${v.toFixed(s.decimals??0)}</text>`;
+    }
+    // Y axis label (unit)
+    if(s.unit){
+      const x=isRight?W-marginR+6:4;
+      svg+=`<text x="${x}" y="${marginT-5}" fill="${s.color}" font-size="10" text-anchor="start">${esc(s.unit)}</text>`;
+    }
+    // path
+    let path='';
+    vals.forEach((v,i)=>{
+      if(v==null)return;
+      const x=marginL+i/(data.length-1||1)*plotW;
+      const y=marginT+plotH-(v-lo)/range*plotH;
+      path+=(path?'L':'M')+` ${x.toFixed(1)} ${y.toFixed(1)}`;
+    });
+    if(path) svg+=`<path d="${path}" fill="none" stroke="${s.color}" stroke-width="${s.width||2.5}" stroke-linejoin="round"/>`;
+    // dots for sparse data
+    if(data.length<=30){
+      vals.forEach((v,i)=>{
+        if(v==null)return;
+        const x=marginL+i/(data.length-1||1)*plotW;
+        const y=marginT+plotH-(v-lo)/range*plotH;
+        svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${s.color}"/>`;
+      });
+    }
+  });
+  svg+='</svg>';
+  wrap.innerHTML=svg;
+}
+function pickLabels(arr,n){
+  if(arr.length<=n) return arr.map((v,i)=>[i,hm(v)]);
+  const step=Math.max(1,Math.floor((arr.length-1)/(n-1)));
+  const r=[];for(let i=0;i<arr.length;i+=step)r.push([i,hm(arr[i])]);
+  if(r[r.length-1][0]!==arr.length-1)r.push([arr.length-1,hm(arr[arr.length-1])]);
+  return r;
+}
+
+/* ===== BAR CHART (channels) ===== */
+function makeBarChart(wrap, channels, myChannel){
+  const W=900, H=240, marginL=50, marginB=40, marginT=20, marginR=14;
+  const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
+  const keys=Object.keys(channels).sort((a,b)=>Number(a)-Number(b));
+  if(!keys.length){wrap.innerHTML='<div class="sm" style="padding:40px;text-align:center">暂无信道数据</div>';return}
+  const maxVal=Math.max(1,...keys.map(k=>(channels[k]||[]).length));
+  const barW=Math.min(40,plotW/keys.length*0.65);
+  const gap=plotW/keys.length;
+  let svg=`<svg viewBox="0 0 ${W} ${H}" style="height:${H}px">`;
+  for(let r=0;r<=4;r++){const y=marginT+plotH*r/4;const v=maxVal-maxVal*r/4;
+    svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.06)"/>`;
+    svg+=`<text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${v.toFixed(0)}</text>`;
+  }
+  keys.forEach((k,i)=>{
+    const nets=channels[k]||[];
+    const named=nets.filter(n=>!n.anonymous).length;
+    const anon=nets.filter(n=>n.anonymous).length;
+    const total=named+anon;
+    const x=marginL+i*gap+gap/2;
+    const hNamed=named/maxVal*plotH;
+    const hAnon=anon/maxVal*plotH;
+    const mine=String(k)===String(myChannel);
+    svg+=`<rect x="${(x-barW/2).toFixed(1)}" y="${(marginT+plotH-hNamed-hAnon).toFixed(1)}" width="${barW}" height="${hNamed.toFixed(1)}" rx="3" fill="${mine?'#21c77a':'#68a0ff'}"/>`;
+    if(hAnon>0) svg+=`<rect x="${(x-barW/2).toFixed(1)}" y="${(marginT+plotH-hAnon).toFixed(1)}" width="${barW}" height="${hAnon.toFixed(1)}" rx="3" fill="#ff5d73"/>`;
+    if(total>0) svg+=`<text x="${x}" y="${(marginT+plotH-hNamed-hAnon-5).toFixed(1)}" fill="var(--text)" font-size="11" text-anchor="middle">${total}</text>`;
+    svg+=`<text x="${x}" y="${marginT+plotH+18}" fill="${mine?'#21c77a':'var(--muted)'}" font-size="11" text-anchor="middle" font-weight="${mine?'700':'400'}">ch${k}</text>`;
+  });
+  svg+=`<text x="4" y="${marginT-4}" fill="var(--muted)" font-size="10">设备数</text>`;
+  svg+='</svg>';
+  wrap.innerHTML=svg;
+}
+
+/* ===== EVENT TIMELINE ===== */
+function makeTimeline(wrap, events){
+  const H=120, W=900, marginL=56, marginR=14, marginT=20, marginB=30;
+  const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
+  if(!events.length){wrap.innerHTML='<div class="sm" style="padding:30px;text-align:center">暂无事件</div>';return}
+  let svg=`<svg viewBox="0 0 ${W} ${H}" style="height:${H}px">`;
+  svg+=`<line x1="${marginL}" y1="${marginT+plotH/2}" x2="${W-marginR}" y2="${marginT+plotH/2}" stroke="rgba(255,255,255,.1)" stroke-width="2"/>`;
+  const typeColors={DISCONNECT:'#ff5d73',INTERNET_LOST:'#ff5d73',RECONNECT:'#21c77a',INTERNET_RESTORED:'#21c77a',CHANNEL_CHANGE:'#ffb020',SNR_DROP:'#ff8c42',WEAK_SIGNAL:'#e8a0ff',SIGNAL_ANOMALY:'#e8a0ff'};
+  const labels=pickLabels(events.map(e=>e.timestamp),6);
+  labels.forEach(([idx,label])=>{const x=marginL+idx/(events.length-1||1)*plotW;svg+=`<text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="11" text-anchor="middle">${esc(label)}</text>`;});
+  events.forEach((ev,i)=>{
+    const x=marginL+i/(events.length-1||1)*plotW;
+    const c=typeColors[ev.type]||'var(--accent)';
+    svg+=`<circle cx="${x.toFixed(1)}" cy="${(marginT+plotH/2).toFixed(1)}" r="5" fill="${c}"><title>${esc(ev.timestamp+' '+ev.type+' '+ev.detail)}</title></circle>`;
+  });
+  svg+='</svg>';
+  wrap.innerHTML=svg;
+}
+
+/* ===== PAGE RENDERERS ===== */
+
+function renderDashboard(cur, history, events){
+  document.getElementById('navTs').textContent=cur.timestamp||'-';
+  const $=id=>document.getElementById(id);
+  $('d-ssid').textContent=cur.ssid||'(未连接)';
+  $('d-status').innerHTML=`<span class="${cur.status==='connected'?'ok':'bad'}">${esc(cur.status||'-')}</span>`;
+  $('d-ch').textContent=cur.channel?`ch ${cur.channel}`:'-';
+  $('d-phy').textContent=[cur.band,cur.width,cur.phy_mode].filter(Boolean).join(' ')||'-';
+  $('d-sig').textContent=cur.signal_dbm!=null?`${cur.signal_dbm} dBm`:'-';
+  $('d-noise').textContent=`noise ${cur.noise_dbm??'-'} / SNR ${cur.snr_db??'-'}`;
+  $('d-inet').innerHTML=`<span class="${cur.internet_reachable?'ok':'bad'}">${cur.internet_reachable?'可达':'失败'}</span>`;
+  $('d-lat').textContent=cur.ping_latency_ms!=null?`${cur.ping_latency_ms.toFixed(1)} ms`:'-';
+  $('d-nbr').textContent=cur.neighbor_count??'-';
+  $('d-same').textContent=cur.same_channel_neighbors??'-';
+  $('d-rf').textContent=cur.rf_total_devices??'-';
+  $('d-anon').textContent=cur.anonymous_devices??'-';
+  $('d-bt').textContent=cur.bluetooth_device_count??'-';
+  $('d-tx').textContent=cur.tx_rate_mbps!=null?`${cur.tx_rate_mbps} Mbps`:'-';
+  // mini trend
+  makeChart(document.getElementById('d-chart-wrap'),{data:history,height:200,rightAxis:true,series:[
+    {key:'signal_dbm',color:'#21c77a',unit:'dBm',width:3,decimals:0},
+    {key:'same_channel_neighbors',color:'#68a0ff',unit:'数量',axis:'right',min:0,decimals:0},
+    {key:'anonymous_devices',color:'#ff5d73',axis:'right',min:0,decimals:0},
+  ]});
+  // events
+  const recent=events.slice(-15).reverse();
+  $('d-events').innerHTML=recent.length?recent.map(e=>`<div class="row"><span class="mono">${esc(hm(e.timestamp))}</span><strong class="sm">${esc(e.type)}</strong><span class="sm">${esc(e.detail)}</span></div>`).join(''):'<div class="sm" style="padding:12px">暂无事件</div>';
+  // bluetooth
+  const bts=cur.bluetooth_devices||[];
+  $('d-blue').innerHTML=bts.length?bts.map(d=>{
+    const rs=d.rssi?` RSSI=${esc(d.rssi)}`:'';
+    return `<div class="row"><span>${esc(d.name||'?')}</span><span class="sm">${d.connected?'已连接':'已配对'} ${esc(d.type||'')}${rs}</span></div>`;
+  }).join(''):'<div class="sm" style="padding:12px">无蓝牙设备</div>';
+}
+
+function renderSignal(history){
+  makeChart(document.getElementById('s-rssi-wrap'),{data:history,height:250,series:[
+    {key:'signal_dbm',color:'#21c77a',unit:'dBm',width:2.5,decimals:0},
+    {key:'noise_dbm',color:'#ff5d73',unit:'dBm',width:1.5,decimals:0},
+  ]});
+  makeChart(document.getElementById('s-snr-wrap'),{data:history,height:220,series:[
+    {key:'snr_db',color:'#68a0ff',unit:'dB',min:0,width:2.5,decimals:0},
+  ]});
+  makeChart(document.getElementById('s-ping-wrap'),{data:history,height:220,series:[
+    {key:'ping_latency_ms',color:'#ffb020',unit:'ms',min:0,width:2.5,decimals:1},
+  ]});
+  makeChart(document.getElementById('s-tx-wrap'),{data:history,height:220,series:[
+    {key:'tx_rate_mbps',color:'#a78bfa',unit:'Mbps',min:0,width:2.5,decimals:0},
+  ]});
+}
+
+function renderChannelsPage(cur){
+  const cn=cur.channel_networks||{};
+  const summaries=cur.rf_channel_summary||{};
+  const my=String(cur.channel??'');
+  makeBarChart(document.getElementById('ch-bar-wrap'),cn,my);
+  const keys=Object.keys(cn).sort((a,b)=>Number(a)-Number(b));
+  const el=document.getElementById('ch-list');
+  el.innerHTML=keys.length?keys.map(k=>{
+    const nets=cn[k]||[];const s=summaries[k]||summaries[Number(k)]||{};
+    const named=nets.filter(n=>!n.anonymous);const anon=nets.filter(n=>n.anonymous);
+    const mine=k===my;
+    const rssi=s.rssi_min!=null?`RSSI ${s.rssi_min}~${s.rssi_max} dBm`:'';
+    return `<div class="channel-box ${mine?'mine':''}">
+      <div><strong>信道 ${esc(k)}</strong>${mine?'<span class="badge" style="background:#21c77a33;color:#21c77a;border-color:#21c77a55">当前信道</span>':''}
+      <span class="badge">命名 ${named.length}</span><span class="badge">匿名 ${anon.length}</span>${rssi?`<span class="badge">${esc(rssi)}</span>`:''}</div>
+      <div style="margin-top:8px">${named.concat(anon).map(n=>{
+        const nm=n.anonymous?'<span style="color:var(--bad)">(anonymous RF)</span>':(esc(n.ssid)||'<span style="color:var(--warn)">(hidden SSID)</span>');
+        const meta=[n.band,n.width,n.phy_mode,n.rssi!=null?'RSSI='+n.rssi:''].filter(Boolean).join(' · ');
+        return `<div class="row"><span>${nm}</span><span class="sm">${esc(meta)}</span></div>`;
+      }).join('')}</div></div>`;
+  }).join(''):'<div class="sm" style="padding:16px">暂无信道数据</div>';
+}
+
+function renderEventsPage(events){
+  makeTimeline(document.getElementById('ev-timeline-wrap'),events);
+  const el=document.getElementById('ev-list');
+  const items=[...events].reverse();
+  el.innerHTML=items.length?items.map(e=>`<div class="row">
+    <span class="mono" style="min-width:140px">${esc(e.timestamp)}</span>
+    <strong style="min-width:160px;color:${{'DISCONNECT':'var(--bad)','INTERNET_LOST':'var(--bad)','RECONNECT':'var(--ok)','INTERNET_RESTORED':'var(--ok)','CHANNEL_CHANGE':'var(--warn)'}[e.type]||'var(--accent)'}">${esc(e.type)}</strong>
+    <span class="sm" style="flex:1">${esc(e.detail)}</span>
+  </div>`).join(''):'<div class="sm" style="padding:16px">暂无事件记录</div>';
+}
+
+/* ===== REFRESH LOOP ===== */
+async function refresh(){
+  try{
+    const [cur,history,events]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events')]);
+    renderDashboard(cur,history,events);
+    renderSignal(history);
+    renderChannelsPage(cur);
+    renderEventsPage(events);
+  }catch(e){console.error(e);}
+}
+refresh();
+setInterval(refresh,3000);
+</script>
+</body>
+</html>

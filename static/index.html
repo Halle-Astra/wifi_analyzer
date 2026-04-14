@@ -152,31 +152,56 @@ function makeChart(wrap, cfg){
     svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/>`;
   });
   // series
+  const drawnAxis={left:false,right:false};
   cfg.series.forEach(s=>{
     const vals=data.map(d=>d[s.key]??null);
     const nums=vals.filter(v=>v!=null);
     if(!nums.length) return;
     const lo=s.min!=null?s.min:Math.min(...nums), hi=s.max!=null?s.max:Math.max(...nums);
     const range=hi-lo||1;
-    // Y axis labels (left or right)
+    // Y axis labels (left or right) — only draw once per side
     const isRight=!!s.axis&&s.axis==='right';
-    for(let r=0;r<=4;r++){
-      const v=hi-(hi-lo)*r/4;
-      const x=isRight?W-marginR+8:marginL-8;
-      const anchor=isRight?'start':'end';
-      svg+=`<text x="${x}" y="${marginT+plotH*r/4+4}" fill="${s.color}" font-size="10" text-anchor="${anchor}">${v.toFixed(s.decimals??0)}</text>`;
+    const side=isRight?'right':'left';
+    if(!drawnAxis[side]){
+      // For shared axis, compute combined range across all series on this side
+      let combinedLo=lo, combinedHi=hi;
+      cfg.series.filter(ss=>(!!ss.axis&&ss.axis==='right')===isRight).forEach(ss=>{
+        const sv=data.map(d=>d[ss.key]??null).filter(v=>v!=null);
+        if(sv.length){
+          combinedLo=Math.min(combinedLo, ss.min!=null?ss.min:Math.min(...sv));
+          combinedHi=Math.max(combinedHi, ss.max!=null?ss.max:Math.max(...sv));
+        }
+      });
+      for(let r=0;r<=4;r++){
+        const v=combinedHi-(combinedHi-combinedLo)*r/4;
+        const x=isRight?W-marginR+8:marginL-8;
+        const anchor=isRight?'start':'end';
+        svg+=`<text x="${x}" y="${marginT+plotH*r/4+4}" fill="var(--muted)" font-size="10" text-anchor="${anchor}">${v.toFixed(s.decimals??0)}</text>`;
+      }
+      if(s.unit){
+        const x=isRight?W-marginR+6:4;
+        svg+=`<text x="${x}" y="${marginT-5}" fill="var(--muted)" font-size="10" text-anchor="start">${esc(s.unit)}</text>`;
+      }
+      drawnAxis[side]=true;
     }
-    // Y axis label (unit)
-    if(s.unit){
-      const x=isRight?W-marginR+6:4;
-      svg+=`<text x="${x}" y="${marginT-5}" fill="${s.color}" font-size="10" text-anchor="start">${esc(s.unit)}</text>`;
+    // Recompute shared scale for this side so all series on the same axis use the same range
+    let axisLo=lo, axisHi=hi;
+    if(isRight||!isRight){
+      cfg.series.filter(ss=>(!!ss.axis&&ss.axis==='right')===isRight).forEach(ss=>{
+        const sv=data.map(d=>d[ss.key]??null).filter(v=>v!=null);
+        if(sv.length){
+          axisLo=Math.min(axisLo, ss.min!=null?ss.min:Math.min(...sv));
+          axisHi=Math.max(axisHi, ss.max!=null?ss.max:Math.max(...sv));
+        }
+      });
     }
+    const axisRange=axisHi-axisLo||1;
     // path
     let path='';
     vals.forEach((v,i)=>{
       if(v==null)return;
       const x=marginL+i/(data.length-1||1)*plotW;
-      const y=marginT+plotH-(v-lo)/range*plotH;
+      const y=marginT+plotH-(v-axisLo)/axisRange*plotH;
       path+=(path?'L':'M')+` ${x.toFixed(1)} ${y.toFixed(1)}`;
     });
     if(path) svg+=`<path d="${path}" fill="none" stroke="${s.color}" stroke-width="${s.width||2.5}" stroke-linejoin="round"/>`;
@@ -185,7 +210,7 @@ function makeChart(wrap, cfg){
       vals.forEach((v,i)=>{
         if(v==null)return;
         const x=marginL+i/(data.length-1||1)*plotW;
-        const y=marginT+plotH-(v-lo)/range*plotH;
+        const y=marginT+plotH-(v-axisLo)/axisRange*plotH;
         svg+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${s.color}"/>`;
       });
     }

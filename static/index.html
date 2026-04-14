@@ -179,18 +179,22 @@ nav .ts{font-size:12px;color:var(--muted)}
       <div class="sm">可用 ← → 方向键精细控制。取消实时刷新后可自由回溯历史干扰情况。</div>
     </div>
     <div class="card c12"><div class="sec">噪声底限与信号趋势（干扰最直接指标）</div><div class="chart-wrap" id="i-noise-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 噪声底限 — 越高越可能有非 WiFi 干扰　<span style="color:#21c77a">■</span> RSSI 信号 — 对比是否同步变化　<span style="color:#68a0ff">■</span> SNR</div></div>
-    <div class="card c12"><div class="sec">匿名 RF 源数量变化趋势</div><div class="chart-wrap" id="i-anon-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 RF 设备数　<span style="color:#68a0ff">■</span> 命名邻居数 — 匿名数突增而命名数不变 → 可能新出现了非标准射频源</div></div>
-    <div class="card c12"><div class="sec">2.4GHz 干扰源频谱图</div><div class="chart-wrap" id="i-spec24-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 / 隐藏 RF 源　<span style="color:#ffb020">■</span> 蓝牙设备对应频段关注区　拖动鼠标可框选放大</div></div>
-    <div class="card c12"><div class="sec">2.4GHz 干扰源信道占用图</div><div class="chart-wrap" id="i-bar24-wrap"></div><div class="sm" style="margin-top:8px">按 2.4GHz 信道统计匿名 RF 源数量和强度，适合看 1/6/11 是否被额外射频源污染。</div></div>
+    <div class="card c12">
+      <div class="sec">当前 WiFi 所在频段分析</div>
+      <div id="i-myband-info"></div>
+    </div>
+    <div class="card c12"><div class="sec">匿名 RF 源数量变化趋势</div><div class="chart-wrap" id="i-anon-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 RF 设备数　<span style="color:#68a0ff">■</span> 命名邻居数</div></div>
+    <div class="card c12"><div class="sec">5GHz 干扰源频谱图</div><div class="chart-wrap" id="i-spec5-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 / 隐藏 RF 源　拖动鼠标可框选放大　你的信道会高亮标记</div></div>
+    <div class="card c12"><div class="sec">5GHz 干扰源信道占用图</div><div class="chart-wrap" id="i-bar5-wrap"></div><div class="sm" style="margin-top:8px">按 5GHz 信道统计匿名 RF 源数量，重点关注 149/153/157/161/165 一带。</div></div>
+    <div class="card c12"><div class="sec">2.4GHz 干扰源频谱图</div><div class="chart-wrap" id="i-spec24-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 匿名 / 隐藏 RF 源　<span style="color:#ffb020">■</span> 蓝牙频段重叠区　拖动鼠标可框选放大</div></div>
+    <div class="card c12"><div class="sec">2.4GHz 干扰源信道占用图</div><div class="chart-wrap" id="i-bar24-wrap"></div><div class="sm" style="margin-top:8px">按 2.4GHz 信道统计匿名 RF 源数量。</div></div>
     <div class="card c6">
-      <div class="sec">蓝牙设备（2.4GHz 直接干扰源）</div>
+      <div class="sec">蓝牙设备（2.4GHz 干扰源）</div>
       <div class="list" id="i-bt-list"></div>
-      <div class="sm" style="margin-top:8px">蓝牙鼠标 / 键盘 / 耳机使用 2.4GHz 跳频，与 WiFi 信道 1-11 频段重叠，可导致间歇性丢包。</div>
     </div>
     <div class="card c6">
-      <div class="sec">匿名 / 隐藏 RF 源（当前快照）</div>
+      <div class="sec">匿名 / 隐藏 RF 源列表</div>
       <div class="list" id="i-anon-list"></div>
-      <div class="sm" style="margin-top:8px">无 SSID 的射频信号，可能是隐藏 WiFi、无线摄像头、微波炉、无线门铃、Zigbee 设备等。2.4GHz 频段尤其需要关注。</div>
     </div>
     <div class="card c12"><div class="sec">Ping 延迟与噪声相关性</div><div class="chart-wrap" id="i-ping-noise-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ffb020">■</span> Ping 延迟　<span style="color:#ff5d73">■</span> 噪声底限 — 两条线同步跳动说明干扰直接影响了网络延迟</div></div>
     <div class="card c12"><div class="sec">疑似非 WiFi 干扰时段</div><div class="list" id="i-events" style="max-height:400px"></div></div>
@@ -834,22 +838,67 @@ function renderInterferencePage(cur, history){
     {key:'neighbor_count',color:'#68a0ff',unit:'数量',min:0,width:1.5,decimals:0},
   ]});
 
-  // 2.4GHz interference spectrum and occupancy charts
+  // Current WiFi band analysis
   const cnInterf = cur.channel_networks||{};
+  const myCh = Number(cur.channel||0);
+  const myBand = myCh > 13 ? '5GHz' : '2.4GHz';
+  const myBandEl = document.getElementById('i-myband-info');
+  const nearbyChannels = myBand==='5GHz' ? [36,40,44,48,52,56,60,64,149,153,157,161,165].filter(c=>Math.abs(c-myCh)<=20) : [1,2,3,4,5,6,7,8,9,10,11,12,13].filter(c=>Math.abs(c-myCh)<=5);
+  const nearbyNets = [];
+  nearbyChannels.forEach(ch=>{
+    const nets = cnInterf[ch] || cnInterf[String(ch)] || [];
+    nets.forEach(n=>nearbyNets.push({...n, channel:ch}));
+  });
+  const nearbyAnon = nearbyNets.filter(n=>n.anonymous||!n.ssid);
+  const nearbyNamed = nearbyNets.filter(n=>!n.anonymous&&n.ssid);
+  let mybandHtml = `<div class="row"><span>当前连接</span><strong>${esc(cur.ssid||'-')} @ ch${myCh} (${myBand})</strong></div>`;
+  mybandHtml += `<div class="row"><span>邻近信道范围</span><strong>${nearbyChannels.join(', ')}</strong></div>`;
+  mybandHtml += `<div class="row"><span>邻近信道总设备数</span><strong>${nearbyNets.length} (命名 ${nearbyNamed.length}, 匿名 ${nearbyAnon.length})</strong></div>`;
+  if(nearbyAnon.length){
+    mybandHtml += `<div class="sm" style="margin:8px 0 4px;color:var(--warn)">⚠ 邻近信道存在 ${nearbyAnon.length} 个匿名/隐藏射频源：</div>`;
+    nearbyAnon.forEach(n=>{
+      const rssi=n.rssi!=null?` RSSI=${n.rssi} dBm`:'';
+      const bssid=n.bssid?` BSSID=${esc(n.bssid)}`:'';
+      const strength=n.rssi!=null&&n.rssi>-60?' <span class="bad">强信号</span>':'';
+      mybandHtml += `<div class="row"><span>ch${n.channel}${strength}</span><span class="sm">${n.width||''}${rssi}${bssid}</span></div>`;
+    });
+  } else {
+    mybandHtml += `<div class="sm" style="margin-top:8px;color:var(--ok)">✓ 邻近信道未发现匿名射频源</div>`;
+  }
+  mybandHtml += `<div class="sm" style="margin-top:8px">同信道设备数: ${cur.same_channel_neighbors??'-'} | 噪声: ${cur.noise_dbm??'-'} dBm | SNR: ${cur.snr_db??'-'} dB</div>`;
+  myBandEl.innerHTML = mybandHtml;
+
+  // 5GHz interference spectrum and bar
+  const anon5 = {};
+  Object.entries(cnInterf).forEach(([ch, nets])=>{
+    if(Number(ch) > 13){
+      anon5[ch] = nets.filter(n=>n.anonymous || !n.ssid);
+    }
+  });
+  const fakeSnap5 = {
+    ssid: cur.ssid||'',
+    channel: myCh > 13 ? myCh : -1,
+    channel_networks: anon5,
+    rf_channel_summary: cur.rf_channel_summary || {},
+  };
+  makeSpectrumChart(document.getElementById('i-spec5-wrap'), fakeSnap5, null, '5GHz');
+  makeBarChart(document.getElementById('i-bar5-wrap'), anon5, myCh > 13 ? String(myCh) : '-');
+
+  // 2.4GHz interference spectrum and bar
   const anon24 = {};
   Object.entries(cnInterf).forEach(([ch, nets])=>{
     if(Number(ch) <= 13){
       anon24[ch] = nets.filter(n=>n.anonymous || !n.ssid);
     }
   });
-  const fakeSnap = {
-    ssid: '',
-    channel: cur.channel,
+  const fakeSnap24 = {
+    ssid: cur.ssid||'',
+    channel: myCh <= 13 ? myCh : -1,
     channel_networks: anon24,
     rf_channel_summary: cur.rf_channel_summary || {},
   };
-  makeSpectrumChart(document.getElementById('i-spec24-wrap'), fakeSnap, null, '2.4GHz');
-  makeBarChart(document.getElementById('i-bar24-wrap'), anon24, '-');
+  makeSpectrumChart(document.getElementById('i-spec24-wrap'), fakeSnap24, null, '2.4GHz');
+  makeBarChart(document.getElementById('i-bar24-wrap'), anon24, myCh <= 13 ? String(myCh) : '-');
 
   // ping vs noise correlation
   makeChart(document.getElementById('i-ping-noise-wrap'),{data:history,height:220,rightAxis:true,series:[
@@ -872,22 +921,35 @@ function renderInterferencePage(cur, history){
   // anonymous RF sources from current snapshot
   const cn=cur.channel_networks||{};
   const anonEl=document.getElementById('i-anon-list');
-  const anons=[];
-  Object.entries(cn).forEach(([ch, nets])=>{
+  const anonsAll=[];
+  Object.entries(cnInterf).forEach(([ch, nets])=>{
     nets.forEach(n=>{
-      if(n.anonymous||!n.ssid) anons.push({...n, channel:ch});
+      if(n.anonymous||!n.ssid) anonsAll.push({...n, channel:ch});
     });
   });
-  if(anons.length){
-    anons.sort((a,b)=>(a.rssi??-100)-(b.rssi??-100));
-    anonEl.innerHTML=anons.map(n=>{
-      const is24=String(n.band||'').includes('2.4')||Number(n.channel)<=13;
-      const band=is24?'<span class="warn">2.4GHz</span>':'<span class="sm">5GHz</span>';
-      const rssi=n.rssi!=null?` RSSI=${n.rssi} dBm`:'';
-      const bssid=n.bssid?` BSSID=${esc(n.bssid)}`:'';
-      const strength=n.rssi!=null&&n.rssi>-60?' <span class="bad">强信号</span>':'';
-      return `<div class="row"><span>ch${esc(n.channel)} ${band}${strength}</span><span class="sm">${n.width||''}${rssi}${bssid}</span></div>`;
-    }).join('');
+  if(anonsAll.length){
+    anonsAll.sort((a,b)=>(Number(a.channel)||0)-(Number(b.channel)||0));
+    const anon5List = anonsAll.filter(n=>Number(n.channel)>13);
+    const anon24List = anonsAll.filter(n=>Number(n.channel)<=13);
+    let ahtml = '';
+    if(anon5List.length){
+      ahtml += `<div class="sm" style="padding:4px 0;font-weight:600;color:var(--warn)">5GHz (${anon5List.length})</div>`;
+      ahtml += anon5List.map(n=>{
+        const rssi=n.rssi!=null?` RSSI=${n.rssi} dBm`:'';
+        const bssid=n.bssid?` ${esc(n.bssid)}`:'';
+        const near=Math.abs(Number(n.channel)-myCh)<=8?' <span class="bad">邻近你的信道</span>':'';
+        return `<div class="row"><span>ch${esc(n.channel)}${near}</span><span class="sm">${n.width||''}${rssi}${bssid}</span></div>`;
+      }).join('');
+    }
+    if(anon24List.length){
+      ahtml += `<div class="sm" style="padding:4px 0;font-weight:600;color:var(--muted)">2.4GHz (${anon24List.length})</div>`;
+      ahtml += anon24List.map(n=>{
+        const rssi=n.rssi!=null?` RSSI=${n.rssi} dBm`:'';
+        const bssid=n.bssid?` ${esc(n.bssid)}`:'';
+        return `<div class="row"><span>ch${esc(n.channel)}</span><span class="sm">${n.width||''}${rssi}${bssid}</span></div>`;
+      }).join('');
+    }
+    anonEl.innerHTML = ahtml;
   } else { anonEl.innerHTML='<div class="sm" style="padding:12px">未发现匿名 RF 源</div>'; }
 
   // interference event detection

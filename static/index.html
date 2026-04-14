@@ -95,10 +95,10 @@ nav .ts{font-size:12px;color:var(--muted)}
 <!-- ===== PAGE: SIGNAL ===== -->
 <div class="page" id="p-signal">
   <div class="grid">
-    <div class="card c12"><div class="sec">信号强度 RSSI (dBm)</div><div class="chart-wrap" id="s-rssi-wrap"></div></div>
-    <div class="card c12"><div class="sec">信噪比 SNR (dB)</div><div class="chart-wrap" id="s-snr-wrap"></div></div>
-    <div class="card c12"><div class="sec">Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div></div>
-    <div class="card c12"><div class="sec">TX 速率 (Mbps)</div><div class="chart-wrap" id="s-tx-wrap"></div></div>
+    <div class="card c12"><div class="sec">信号强度与噪声 (dBm)</div><div class="chart-wrap" id="s-rssi-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：RSSI / 接收信号强度　<span style="color:#ff5d73">■</span> 红色：Noise / 噪声底限</div></div>
+    <div class="card c12"><div class="sec">信噪比 SNR (dB)</div><div class="chart-wrap" id="s-snr-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> SNR：信号与噪声的差值，越高越好</div></div>
+    <div class="card c12"><div class="sec">Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ffb020">■</span> Ping 延迟：到 223.5.5.5 的往返时间</div></div>
+    <div class="card c12"><div class="sec">TX 速率 (Mbps)</div><div class="chart-wrap" id="s-tx-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#a78bfa">■</span> TX 速率：当前连接的传输速率</div></div>
   </div>
 </div>
 

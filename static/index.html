@@ -594,7 +594,8 @@ function renderDashboard(cur, history, events){
   $('d-ch').textContent=cur.channel?`ch ${cur.channel}`:'-';
   $('d-phy').textContent=[cur.band,cur.width,cur.phy_mode].filter(Boolean).join(' ')||'-';
   $('d-sig').textContent=cur.signal_dbm!=null?`${cur.signal_dbm} dBm`:'-';
-  $('d-noise').textContent=`noise ${cur.noise_dbm??'-'} / SNR ${cur.snr_db??'-'}`;
+  const scanRssi=cur.scan_signal_dbm!=null?` (扫描 ${cur.scan_signal_dbm})`:'';
+  $('d-noise').textContent=`noise ${cur.noise_dbm??'-'} / SNR ${cur.snr_db??'-'}${scanRssi}`;
   $('d-inet').innerHTML=`<span class="${cur.internet_reachable?'ok':'bad'}">${cur.internet_reachable?'可达':'失败'}</span>`;
   $('d-lat').textContent=cur.ping_latency_ms!=null?`公网 ${cur.ping_latency_ms.toFixed(1)}ms`+((cur.ap_ping_latency_ms!=null)?` / AP ${cur.ap_ping_latency_ms.toFixed(1)}ms`:''):'-';
   $('d-nbr').textContent=cur.neighbor_count??'-';

@@ -270,6 +270,21 @@ def scan_bluetooth():
         return []
 
 
+def current_scan_rssi(rf_data, ssid, channel):
+    """Return scan-based RSSI for the current SSID/channel if available."""
+    if not rf_data or not ssid or channel is None:
+        return None, None
+    matches = [
+        n for n in rf_data.get("networks", [])
+        if n.get("ssid") == ssid and n.get("channel") == channel
+    ]
+    if not matches:
+        return None, None
+    # If multiple BSSIDs share the same SSID/channel, use the strongest one.
+    best = max(matches, key=lambda n: n.get("rssi", -999))
+    return best.get("rssi"), best.get("bssid")
+
+
 def collect_snapshot():
     """Collect a single snapshot of WiFi state."""
     iface = get_wifi_data()
@@ -298,6 +313,7 @@ def collect_snapshot():
 
     rf_data = rf_scan()
     channel_networks, rf_channel_summary = merge_rf_data(channel_networks, rf_data)
+    scan_rssi_dbm, scan_bssid = current_scan_rssi(rf_data, ssid, channel)
 
     bt_devices = scan_bluetooth()
 
@@ -322,6 +338,8 @@ def collect_snapshot():
         "width": width,
         "phy_mode": phy,
         "signal_dbm": signal,
+        "scan_signal_dbm": scan_rssi_dbm,
+        "current_bssid": scan_bssid,
         "noise_dbm": noise,
         "snr_db": snr,
         "tx_rate_mbps": tx_rate,

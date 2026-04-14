@@ -666,6 +666,10 @@ function renderChannelsPage(cur, history){
   const latestIndex=Math.max(0, timelineMeta.length-1);
   const isLatest=(idx>=latestIndex);
   label.textContent=isLatest?'实时':('历史快照：'+((timelineMeta[idx]?.t)||''));
+  if(!specDragging){
+    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
+    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
+  }
   const cn=cur.channel_networks||{};
   const summaries=cur.rf_channel_summary||{};
   const my=String(cur.channel??'');

@@ -449,6 +449,17 @@ def detect_events(prev, curr):
     elif curr_signal is not None and curr_signal < -75:
         events.append({"type": "WEAK_SIGNAL", "detail": f"Signal {curr_signal} dBm"})
 
+    prev_noise = prev.get("noise_dbm")
+    curr_noise = curr.get("noise_dbm")
+    if (prev_noise is not None and curr_noise is not None
+            and curr_noise - prev_noise >= 3
+            and curr_signal is not None and prev.get("signal_dbm") is not None
+            and abs(curr_signal - prev.get("signal_dbm")) <= 3):
+        events.append({
+            "type": "NOISE_SPIKE",
+            "detail": f"Noise {prev_noise} -> {curr_noise} dBm, signal stable -> possible non-WiFi interference",
+        })
+
     return events
 
 

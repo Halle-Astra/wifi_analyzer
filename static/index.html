@@ -66,6 +66,7 @@ nav .ts{font-size:12px;color:var(--muted)}
   <a href="#dashboard" class="active" data-page="dashboard">概览</a>
   <a href="#signal" data-page="signal">信号</a>
   <a href="#channels" data-page="channels">信道</a>
+  <a href="#interference" data-page="interference">干扰</a>
   <a href="#events" data-page="events">事件</a>
   <span class="spacer"></span>
   <span class="ts" id="navTs">-</span>
@@ -162,6 +163,16 @@ nav .ts{font-size:12px;color:var(--muted)}
     <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
     <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
     <div class="card c12"><div class="sec">各信道设备明细</div><div id="ch-list"></div></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: INTERFERENCE ===== -->
+<div class="page" id="p-interference">
+  <div class="grid">
+    <div class="card c12"><div class="sec">噪声底限趋势（非 WiFi 干扰最直接指标）</div><div class="chart-wrap" id="i-noise-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ff5d73">■</span> 噪声底限越高（数值越接近 0），越可能存在非 WiFi 干扰　<span style="color:#68a0ff">■</span> SNR 下降</div></div>
+    <div class="card c6"><div class="sec">蓝牙设备（2.4GHz 直接干扰源）</div><div class="list" id="i-bt-list"></div></div>
+    <div class="card c6"><div class="sec">匿名 / 隐藏 RF 源</div><div class="list" id="i-anon-list"></div></div>
+    <div class="card c12"><div class="sec">疑似非 WiFi 干扰时段</div><div class="list" id="i-events"></div></div>
   </div>
 </div>
 
@@ -698,6 +709,60 @@ function renderChannelsPage(cur, history){
   }).join(''):'<div class="sm" style="padding:16px">暂无信道数据</div>';
 }
 
+function renderInterferencePage(cur, history){
+  makeChart(document.getElementById('i-noise-wrap'),{data:history,height:250,series:[
+    {key:'noise_dbm',color:'#ff5d73',unit:'dBm',width:2.5,decimals:0},
+    {key:'snr_db',color:'#68a0ff',unit:'dB',min:0,width:2,decimals:0},
+  ]});
+
+  const bts=cur.bluetooth_devices||[];
+  const btEl=document.getElementById('i-bt-list');
+  if(bts.length){
+    btEl.innerHTML=bts.map(d=>{
+      const rs=d.rssi?` RSSI=${esc(d.rssi)}`:'';
+      const warn=(d.connected||d.type==='Mouse'||d.type==='Keyboard')?' <span class="warn">⚠ 活跃 2.4GHz 干扰源</span>':'';
+      return `<div class="row"><span>${esc(d.name||'?')}</span><span class="sm">${d.connected?'已连接':'已配对'} ${esc(d.type||'')}${rs}${warn}</span></div>`;
+    }).join('');
+  } else { btEl.innerHTML='<div class="sm" style="padding:12px">未发现蓝牙设备</div>'; }
+
+  const cn=cur.channel_networks||{};
+  const anonEl=document.getElementById('i-anon-list');
+  const anons=[];
+  Object.entries(cn).forEach(([ch, nets])=>{
+    nets.forEach(n=>{
+      if(n.anonymous||!n.ssid) anons.push({...n, channel:ch});
+    });
+  });
+  if(anons.length){
+    anonEl.innerHTML=anons.map(n=>{
+      const band=(n.band||'').includes('2.4')||String(n.channel||0)<='13'?'<span class="warn">2.4GHz</span>':'<span class="sm">5GHz</span>';
+      const rssi=n.rssi!=null?` RSSI=${n.rssi}`:'';
+      const bssid=n.bssid?` BSSID=${esc(n.bssid)}`:'';
+      return `<div class="row"><span>ch${esc(n.channel)} ${band}</span><span class="sm">${n.width||''}${rssi}${bssid}</span></div>`;
+    }).join('');
+  } else { anonEl.innerHTML='<div class="sm" style="padding:12px">未发现匿名 RF 源</div>'; }
+
+  const iEvEl=document.getElementById('i-events');
+  const iEvents=[];
+  for(let i=1;i<history.length;i++){
+    const prev=history[i-1], cur2=history[i];
+    const prevNoise=prev.noise_dbm, curNoise=cur2.noise_dbm;
+    const prevSnr=prev.snr_db, curSnr=cur2.snr_db;
+    const prevSig=prev.signal_dbm, curSig=cur2.signal_dbm;
+    if(prevNoise!=null && curNoise!=null && curNoise-prevNoise>=3 && (prevSig==null||curSig==null||Math.abs(curSig-prevSig)<=3)){
+      iEvents.push({ts:cur2.timestamp, type:'NOISE_SPIKE', detail:`噪声从 ${prevNoise} 升到 ${curNoise} dBm，信号基本不变 → 疑似非 WiFi 干扰`});
+    }
+    if(prevSnr!=null && curSnr!=null && prevSnr-curSnr>=8 && (prevSig==null||curSig==null||Math.abs(curSig-prevSig)<=3)){
+      iEvents.push({ts:cur2.timestamp, type:'SNR_DROP_NO_RSSI', detail:`SNR 从 ${prevSnr} 降到 ${curSnr} dB，但信号没变 → 噪声源干扰`});
+    }
+  }
+  iEvEl.innerHTML=iEvents.length?iEvents.reverse().map(e=>`<div class="row">
+    <span class="mono" style="min-width:140px">${esc(e.ts)}</span>
+    <strong style="color:var(--warn);min-width:180px">${esc(e.type)}</strong>
+    <span class="sm" style="flex:1">${esc(e.detail)}</span>
+  </div>`).join(''):'<div class="sm" style="padding:16px">当前窗口内未检测到明显非 WiFi 干扰特征</div>';
+}
+
 function renderEventsPage(events){
   makeTimeline(document.getElementById('ev-timeline-wrap'),events);
   const el=document.getElementById('ev-list');
@@ -766,6 +831,7 @@ async function fetchView(center){
     renderDashboard(v.current, v.history, v.events);
     renderSignal(v.history);
     renderChannelsPage(v.current, v.history);
+    renderInterferencePage(v.current, v.history);
     renderEventsPage(v.events);
   }catch(e){console.error(e);}
 }

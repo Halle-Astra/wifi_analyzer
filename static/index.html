@@ -34,12 +34,13 @@ nav .ts{font-size:12px;color:var(--muted)}
 .channel-box{border:1px solid rgba(104,160,255,.15);border-radius:var(--radius);padding:12px;margin-bottom:10px;background:rgba(255,255,255,.015)}
 .channel-box.mine{border-color:rgba(33,199,122,.4)}
 /* CHART */
-.chart-wrap{position:relative;background:rgba(255,255,255,.02);border-radius:var(--radius);overflow:hidden}
+.chart-wrap{position:relative;background:rgba(255,255,255,.02);border-radius:var(--radius);overflow:visible}
 .chart-wrap svg{display:block;width:100%;height:auto}
 .chart-wrap svg .trap-label { opacity: 0; transition: opacity .15s; pointer-events: none; }
 .chart-wrap svg .trap-group:hover .trap-label { opacity: 1; }
 .chart-wrap svg .trap-group:hover path { stroke-width: 3; }
-.chart-wrap svg .trap-group { cursor: pointer; }
+.chart-wrap svg .trap-group { cursor: crosshair; }
+.sel-box{position:absolute;border:2px solid var(--accent);background:rgba(104,160,255,.1);pointer-events:none;z-index:10;display:none;border-radius:4px}
 .spec-tooltip{position:absolute;z-index:20;pointer-events:none;background:rgba(8,12,24,.96);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:220px;max-width:380px;color:var(--text);font-size:12px;line-height:1.45;box-shadow:0 10px 30px rgba(0,0,0,.25);display:none}
 .spec-tooltip .ttl{font-weight:700;margin-bottom:6px;color:#fff}
 .spec-tooltip .itm{padding:2px 0;border-top:1px solid rgba(255,255,255,.06)}
@@ -116,14 +117,20 @@ nav .ts{font-size:12px;color:var(--muted)}
 <div class="page" id="p-channels">
   <div class="grid">
     <div class="card c12">
-      <div class="sec">2.4GHz 频谱图</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="sec" style="margin:0">2.4GHz 频谱图</div>
+        <button id="ch-reset-24" class="badge" style="background:transparent;color:var(--text);cursor:pointer">重置缩放</button>
+      </div>
       <div class="chart-wrap" id="ch-spec24-wrap"></div>
-      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40MHz)　高度 = 信号强度(RSSI)　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
     </div>
     <div class="card c12">
-      <div class="sec">5GHz 频谱图</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="sec" style="margin:0">5GHz 频谱图</div>
+        <button id="ch-reset-5" class="badge" style="background:transparent;color:var(--text);cursor:pointer">重置缩放</button>
+      </div>
       <div class="chart-wrap" id="ch-spec5-wrap"></div>
-      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
     </div>
     <div class="card c12">
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;flex-wrap:wrap">
@@ -331,14 +338,17 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
   const nets=[];
   const currentNames=new Set([snapshot.ssid||'']);
-  const channels=bandLabel==='2.4GHz' ? [1,2,3,4,5,6,7,8,9,10,11,12,13] : [36,40,44,48,52,56,60,64,149,153,157,161,165];
+  const baseChannels=bandLabel==='2.4GHz' ? [1,2,3,4,5,6,7,8,9,10,11,12,13] : [36,40,44,48,52,56,60,64,149,153,157,161,165];
+  const zoom=spectrumZoom[bandLabel];
+  const channels=zoom ? baseChannels.filter(ch=>ch>=zoom.min&&ch<=zoom.max) : baseChannels;
   const chMin=Math.min(...channels), chMax=Math.max(...channels);
   const xFor=ch=>marginL+(ch-chMin)/(chMax-chMin||1)*plotW;
   const yFor=rssi=>marginT+plotH-((rssi+100)/70)*plotH;
   Object.entries(snapshot.channel_networks||{}).forEach(([ch,items])=>{
     items.forEach(net=>{
       const band=(net.band||'').replace('2GHz','2.4GHz');
-      if(band.includes(bandLabel)) nets.push({...net, channel:Number(ch), _src:'current'});
+      const chNum=Number(ch);
+      if(band.includes(bandLabel) && chNum>=chMin && chNum<=chMax) nets.push({...net, channel:chNum, _src:'current'});
     });
   });
   const compare=[];
@@ -347,7 +357,8 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     Object.entries(compareSnapshot.channel_networks||{}).forEach(([ch,items])=>{
       items.forEach(net=>{
         const band=(net.band||'').replace('2GHz','2.4GHz');
-        if(band.includes(bandLabel)) compare.push({...net, channel:Number(ch), _src:'history', _ts:cmpTs});
+        const chNum=Number(ch);
+        if(band.includes(bandLabel) && chNum>=chMin && chNum<=chMax) compare.push({...net, channel:chNum, _src:'history', _ts:cmpTs});
       });
     });
   }
@@ -374,27 +385,40 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
     svg+=`</g>`;
   });
   svg+='</svg>';
-  const tooltipId='tt-'+bandLabel.replace('.','');
-  let tooltip=wrap.querySelector('.spec-tooltip');
-  if(!tooltip){tooltip=document.createElement('div');tooltip.className='spec-tooltip';wrap.appendChild(tooltip);}
+  const card=wrap.closest('.card')||wrap.parentElement;
+  const tooltipKey='specTooltip'+bandLabel;
+  let tooltip=card.querySelector('.spec-tooltip');
+  if(!tooltip){tooltip=document.createElement('div');tooltip.className='spec-tooltip';card.appendChild(tooltip);}
+  let sel=wrap.querySelector('.sel-box');
+  if(!sel){sel=document.createElement('div');sel.className='sel-box';wrap.appendChild(sel);}
   wrap.innerHTML=svg;
-  wrap.appendChild(tooltip);
-  wrap.style.position='relative';
+  wrap.appendChild(sel);
   const svgEl=wrap.querySelector('svg');
+  let dragStart=null;
+  svgEl.addEventListener('mousedown',e=>{
+    const rect=svgEl.getBoundingClientRect();
+    dragStart={x:e.clientX-rect.left,y:e.clientY-rect.top};
+    sel.style.display='block';sel.style.left=dragStart.x+'px';sel.style.top=dragStart.y+'px';sel.style.width='0px';sel.style.height='0px';
+  });
   svgEl.addEventListener('mousemove',e=>{
     const rect=svgEl.getBoundingClientRect();
     const mx=(e.clientX-rect.left)/rect.width*W;
     const my2=(e.clientY-rect.top)/rect.height*H;
+    if(dragStart){
+      const x=Math.min(dragStart.x,e.clientX-rect.left), y=Math.min(dragStart.y,e.clientY-rect.top);
+      const w=Math.abs((e.clientX-rect.left)-dragStart.x), h=Math.abs((e.clientY-rect.top)-dragStart.y);
+      sel.style.left=x+'px';sel.style.top=y+'px';sel.style.width=w+'px';sel.style.height=h+'px';
+      return;
+    }
     const hits=[];
     allNets.forEach(net=>{
-      const ch=net.channel;
-      const rssi=net.rssi!=null?net.rssi:-75;
-      const span=widthToSpan(net.width, net.band);
+      const ch=net.channel, rssi=net.rssi!=null?net.rssi:-75, span=widthToSpan(net.width, net.band);
       const xl=xFor(ch-span/2), xr=xFor(ch+span/2), yp=yFor(rssi), yb=yFor(-100);
       if(mx>=xl && mx<=xr && my2>=yp && my2<=yb) hits.push(net);
     });
     if(hits.length){
-      let html='<div class="ttl">ch'+hits[0].channel+' 上的信号 ('+hits.length+'个)</div>';
+      hits.sort((a,b)=>(b.rssi??-75)-(a.rssi??-75));
+      let html=`<div class="ttl">ch${hits[0].channel} 上的信号 (${hits.length}个)</div>`;
       hits.forEach(n=>{
         const name=n.anonymous?'(匿名RF)':(n.ssid||'(hidden)');
         const rssi=n.rssi!=null?n.rssi:-75;
@@ -403,13 +427,30 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
       });
       tooltip.innerHTML=html;
       tooltip.style.display='block';
-      const tx=Math.min(e.clientX-rect.left+12, rect.width-240);
-      const ty=Math.max(0, e.clientY-rect.top-60);
-      tooltip.style.left=tx+'px';
-      tooltip.style.top=ty+'px';
+      const cardRect=card.getBoundingClientRect();
+      let tx=e.clientX-cardRect.left+16;
+      let ty=e.clientY-cardRect.top+16;
+      if(tx+360>cardRect.width) tx=cardRect.width-360;
+      if(ty+180>cardRect.height) ty=Math.max(10,e.clientY-cardRect.top-190);
+      tooltip.style.left=Math.max(10,tx)+'px';
+      tooltip.style.top=Math.max(10,ty)+'px';
     } else { tooltip.style.display='none'; }
   });
-  svgEl.addEventListener('mouseleave',()=>{tooltip.style.display='none';});
+  const finishDrag=e=>{
+    if(!dragStart) return;
+    const rect=svgEl.getBoundingClientRect();
+    const x0=Math.min(dragStart.x,e.clientX-rect.left), x1=Math.max(dragStart.x,e.clientX-rect.left);
+    sel.style.display='none';
+    if(Math.abs(x1-x0)>20){
+      const ch0=chMin+(x0/rect.width)*(chMax-chMin||1);
+      const ch1=chMin+(x1/rect.width)*(chMax-chMin||1);
+      spectrumZoom[bandLabel]={min:Math.max(Math.min(...baseChannels),Math.floor(Math.min(ch0,ch1))),max:Math.min(Math.max(...baseChannels),Math.ceil(Math.max(ch0,ch1)))};
+      triggerSliderUpdate();
+    }
+    dragStart=null;
+  };
+  svgEl.addEventListener('mouseup',finishDrag);
+  svgEl.addEventListener('mouseleave',e=>{ if(!dragStart) tooltip.style.display='none'; });
 }
 
 /* ===== PAGE RENDERERS ===== */
@@ -468,6 +509,10 @@ let fullSnapshots=[];
 let compareIndex=null;
 let userDragging=false;
 let autoRefresh=true;
+const spectrumZoom={
+  '2.4GHz': null,
+  '5GHz': null,
+};
 
 function getSelectedSnapshot(){
   if(!fullSnapshots.length) return null;
@@ -545,6 +590,8 @@ autoRefreshCb.addEventListener('change', function(){
     refresh();
   }
 });
+document.getElementById('ch-reset-24').addEventListener('click',()=>{spectrumZoom['2.4GHz']=null;triggerSliderUpdate();});
+document.getElementById('ch-reset-5').addEventListener('click',()=>{spectrumZoom['5GHz']=null;triggerSliderUpdate();});
 function triggerSliderUpdate(){
   const idx=Number(timeSlider.value);
   const isLatest=(idx>=fullSnapshots.length-1);

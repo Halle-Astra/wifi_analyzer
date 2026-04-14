@@ -26,7 +26,8 @@
 - **信道邻居详情** — 每个信道上具体有哪些网络（SSID、PHY 模式、带宽等）
 - **匿名/隐藏设备** — 通过 RF 扫描检测无 SSID 广播的设备，记录其信道和信号强度
 - **蓝牙设备** — 扫描周围蓝牙设备（蓝牙使用 2.4GHz 频段，可能造成干扰）
-- **互联网连通性** — ping 测试结果及延迟 (ms)
+- **互联网连通性** — ping 公网测试结果及延迟 (ms)
+- **AP 延迟** — ping AP/网关测试，用于区分无线链路问题和上游网络问题（需 `--ap` 参数）
 
 此外，工具会自动检测以下**事件**：
 
@@ -61,6 +62,9 @@ swiftc -framework CoreWLAN -framework Foundation wifi_scanner.swift -o wifi_scan
 # 默认端口 8800，采样间隔 10 秒
 python3 wifi_web.py
 
+# 同时监控 AP 延迟（推荐）
+python3 wifi_web.py --ap 192.168.1.10
+
 # 自定义端口和采样间隔
 python3 wifi_web.py -p 9000 -i 5
 ```
@@ -69,9 +73,12 @@ python3 wifi_web.py -p 9000 -i 5
 - 多页面 Web UI：概览 / 信号 / 信道 / 事件
 - Dashboard 概览卡片和趋势图
 - 带时间横轴和单位纵轴的详细图表，方便分析波动
+- AP vs 公网 Ping 对比图（`--ap` 启用时），一眼看出延迟跳变发生在哪一段
+- 2.4GHz / 5GHz 频谱梯形图，支持鼠标框选缩放和历史快照对比
 - 各信道上的所有设备（命名 + 匿名），当前信道高亮
 - 蓝牙设备列表（潜在 2.4GHz 干扰源）
 - 事件时间线（断连、信道切换等）
+- 历史回溯滑块 + 实时刷新开关，分析历史数据时不被新数据打断
 
 Web UI 同时会将数据写入 `logs/` 目录，关闭后可用 `wifi_analyzer.py` 做离线分析。
 
@@ -80,6 +87,9 @@ Web UI 同时会将数据写入 `logs/` 目录，关闭后可用 `wifi_analyzer.
 ```bash
 # 默认每 10 秒采样，日志写入 ./logs/
 python3 wifi_monitor.py
+
+# 同时监控 AP 延迟
+python3 wifi_monitor.py --ap 192.168.1.10
 
 # 自定义采样间隔为 5 秒
 python3 wifi_monitor.py -i 5
@@ -158,13 +168,30 @@ logs/
 
 ## 典型排查流程
 
-1. 启动后台监控：`nohup python3 wifi_monitor.py -q &`
+1. 启动后台监控：`python3 wifi_web.py --ap 192.168.1.10`（或 `nohup python3 wifi_monitor.py --ap 192.168.1.10 -q &`）
 2. 正常使用电脑，等问题复现
 3. 记录下断网的大致时间
-4. 运行 `python3 wifi_analyzer.py around "断网时间"` 查看当时情况
-5. 运行 `python3 wifi_analyzer.py disconnects` 查看所有断连事件的规律
-6. 运行 `python3 wifi_analyzer.py neighbors "断网时间"` 查看当时各信道上有哪些网络、匿名设备和蓝牙干扰源
-7. 结合 `channels` 和 `signal` 分析是否为信道拥挤或信号不稳定导致
+4. 打开信号页查看 AP vs 公网 Ping 对比图，判断延迟跳变发生在哪一段
+5. 运行 `python3 wifi_analyzer.py around "断网时间"` 查看当时情况
+6. 运行 `python3 wifi_analyzer.py disconnects` 查看所有断连事件的规律
+7. 运行 `python3 wifi_analyzer.py neighbors "断网时间"` 查看当时各信道上有哪些网络、匿名设备和蓝牙干扰源
+8. 打开信道页频谱梯形图，框选放大干扰区域，结合历史滑块对比不同时间的频谱变化
+
+## 延迟跳变分析
+
+如果你的网络存在周期性延迟跳变（如每隔 15 秒 ping 从 10ms 跳到 100ms+），可以用 `--ap` 参数同时 ping AP 和公网来定位问题所在：
+
+```bash
+python3 wifi_web.py --ap 192.168.1.10
+```
+
+打开信号页的「AP vs 公网 Ping 对比」图表：
+
+- **两条线同时跳** → 无线链路问题（信道干扰 / AP 负载 / 漫游切换）
+- **只有公网跳，AP 平稳** → 上游网络问题（路由器 / 运营商）
+- **AP 小幅跳，公网大幅跳** → 无线有轻微问题，上游放大了延迟
+
+结合信道页的频谱梯形图，可以进一步确认是否有同信道干扰源在跳变时段出现。
 
 ## 系统要求
 
@@ -182,6 +209,7 @@ logs/
 | `-p`, `--port` | HTTP 监听端口 | 8800 |
 | `-i`, `--interval` | 采样间隔（秒） | 10 |
 | `-d`, `--log-dir` | 日志输出目录 | `./logs/` |
+| `--ap` | AP/网关 IP，启用本地 ping 对比分析 | 无 |
 
 ### wifi_monitor.py
 
@@ -190,6 +218,7 @@ logs/
 | `-i`, `--interval` | 采样间隔（秒） | 10 |
 | `-d`, `--log-dir` | 日志输出目录 | `./logs/` |
 | `-q`, `--quiet` | 静默模式，不输出到终端 | 关闭 |
+| `--ap` | AP/网关 IP，启用本地 ping 对比分析 | 无 |
 
 ### wifi_analyzer.py
 

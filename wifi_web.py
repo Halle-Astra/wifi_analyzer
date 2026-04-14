@@ -114,7 +114,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+        except ConnectionResetError:
+            pass
 
     def _file_response(self, filepath, content_type):
         try:
@@ -124,7 +129,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
+            except ConnectionResetError:
+                pass
         except FileNotFoundError:
             self.send_error(404)
 

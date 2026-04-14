@@ -336,46 +336,61 @@ function netColor(net, currentNames){
 function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   const W=1000, H=280, marginL=50, marginR=16, marginT=24, marginB=36;
   const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
-  const nets=[];
   const currentNames=new Set([snapshot.ssid||'']);
   const baseChannels=bandLabel==='2.4GHz' ? [1,2,3,4,5,6,7,8,9,10,11,12,13] : [36,40,44,48,52,56,60,64,149,153,157,161,165];
   const zoom=spectrumZoom[bandLabel];
-  const channels=zoom ? baseChannels.filter(ch=>ch>=zoom.min&&ch<=zoom.max) : baseChannels;
-  const chMin=Math.min(...channels), chMax=Math.max(...channels);
-  const xFor=ch=>marginL+(ch-chMin)/(chMax-chMin||1)*plotW;
-  const yFor=rssi=>marginT+plotH-((rssi+100)/70)*plotH;
-  Object.entries(snapshot.channel_networks||{}).forEach(([ch,items])=>{
-    items.forEach(net=>{
-      const band=(net.band||'').replace('2GHz','2.4GHz');
-      const chNum=Number(ch);
-      if(band.includes(bandLabel) && chNum>=chMin && chNum<=chMax) nets.push({...net, channel:chNum, _src:'current'});
-    });
-  });
-  const compare=[];
-  const cmpTs=compareSnapshot?.timestamp||'';
-  if(compareSnapshot){
-    Object.entries(compareSnapshot.channel_networks||{}).forEach(([ch,items])=>{
+  const slotMin=zoom ? Math.max(0, zoom.slotMin) : 0;
+  const slotMax=zoom ? Math.min(baseChannels.length-1, zoom.slotMax) : baseChannels.length-1;
+  const rssiTop=zoom ? Math.min(-20, zoom.rssiTop) : -20;
+  const rssiBottom=-100;
+  const slotRange=Math.max(0.5, slotMax-slotMin);
+  const rssiRange=rssiTop-rssiBottom||1;
+  const chToSlot=ch=>baseChannels.indexOf(Number(ch));
+  const xSlot=slot=>marginL+Math.max(0,Math.min(1,(slot-slotMin)/slotRange))*plotW;
+  const yFor=rssi=>marginT+plotH-((rssi-rssiBottom)/rssiRange)*plotH;
+  const rssiFromY=svgY=>rssiBottom+(1-(svgY-marginT)/plotH)*rssiRange;
+  const collectNets=(src, snap)=>{
+    const result=[];
+    if(!snap) return result;
+    Object.entries(snap.channel_networks||{}).forEach(([ch,items])=>{
       items.forEach(net=>{
         const band=(net.band||'').replace('2GHz','2.4GHz');
-        const chNum=Number(ch);
-        if(band.includes(bandLabel) && chNum>=chMin && chNum<=chMax) compare.push({...net, channel:chNum, _src:'history', _ts:cmpTs});
+        if(band.includes(bandLabel)){
+          const slot=chToSlot(ch);
+          const span=widthToSpan(net.width, net.band);
+          if(slot>=0 && slot+span/2>=slotMin && slot-span/2<=slotMax)
+            result.push({...net, channel:Number(ch), _src:src, _ts:snap.timestamp||''});
+        }
       });
     });
-  }
-  let svg=`<svg viewBox="0 0 ${W} ${H}">`;
-  for(let r=-90;r<=-20;r+=10){const y=yFor(r);svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.05)"/><text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${r}</text>`;}
-  channels.forEach(ch=>{const x=xFor(ch);svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/><text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="10" text-anchor="middle">${ch}</text>`;});
-  svg+=`<text x="6" y="${marginT-6}" fill="var(--muted)" font-size="10">RSSI(dBm)</text>`;
+    return result;
+  };
+  const nets=collectNets('current', snapshot);
+  const compare=compareSnapshot ? collectNets('history', compareSnapshot) : [];
   const allNets=[...compare.map(n=>({...n,_dashed:true})),...nets.map(n=>({...n,_dashed:false}))];
+  let svg=`<svg viewBox="0 0 ${W} ${H}">`;
+  for(let r=-100;r<=-20;r+=10){
+    const y=yFor(r);
+    if(y<marginT-1||y>marginT+plotH+1) continue;
+    svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.05)"/>`;
+    svg+=`<text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${r}</text>`;
+  }
+  baseChannels.forEach((ch,idx)=>{
+    if(idx<slotMin-0.5||idx>slotMax+0.5) return;
+    const x=xSlot(idx);
+    svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/>`;
+    svg+=`<text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="10" text-anchor="middle">${ch}</text>`;
+  });
+  svg+=`<text x="6" y="${marginT-6}" fill="var(--muted)" font-size="10">RSSI(dBm)</text>`;
   allNets.forEach((net,idx)=>{
-    const ch=net.channel;
+    const slot=chToSlot(net.channel); if(slot<0) return;
     const rssi=net.rssi!=null?net.rssi:-75;
     const span=widthToSpan(net.width, net.band);
-    const x0=xFor(ch-span/2), x1=xFor(ch), x2=xFor(ch+span/2);
-    const yBase=yFor(-100), yPeak=yFor(rssi), yShoulder=yFor(Math.max(-95, rssi-10));
+    const x0=xSlot(slot-span/2), x1=xSlot(slot), x2=xSlot(slot+span/2);
+    const yBase=yFor(rssiBottom), yPeak=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi)));
+    const yShoulder=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi-10)));
     const color=net._dashed?'rgba(255,255,255,.22)':netColor(net,currentNames);
-    const dash=net._dashed?'6 5':'none';
-    const fill=net._dashed?'rgba(255,255,255,.03)':color+'22';
+    const dash=net._dashed?'6 5':'none'; const fill=net._dashed?'rgba(255,255,255,.03)':color+'22';
     svg+=`<g class="trap-group" data-idx="${idx}">`;
     svg+=`<path d="M ${x0.toFixed(1)} ${yBase.toFixed(1)} L ${((x0+x1)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x1.toFixed(1)} ${yPeak.toFixed(1)} L ${((x1+x2)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x2.toFixed(1)} ${yBase.toFixed(1)}" fill="${fill}" stroke="${color}" stroke-width="2" stroke-dasharray="${dash}"/>`;
     if(!net._dashed){
@@ -386,7 +401,6 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   });
   svg+='</svg>';
   const card=wrap.closest('.card')||wrap.parentElement;
-  const tooltipKey='specTooltip'+bandLabel;
   let tooltip=card.querySelector('.spec-tooltip');
   if(!tooltip){tooltip=document.createElement('div');tooltip.className='spec-tooltip';card.appendChild(tooltip);}
   let sel=wrap.querySelector('.sel-box');
@@ -395,80 +409,96 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   wrap.appendChild(sel);
   const svgEl=wrap.querySelector('svg');
   let dragStart=null;
+  const pxToSvg=(px,py,rect)=>({sx:px/rect.width*W, sy:py/rect.height*H});
+  const plotBounds=rect=>({
+    l:marginL/W*rect.width, r:(W-marginR)/W*rect.width,
+    t:marginT/H*rect.height, b:(marginT+plotH)/H*rect.height
+  });
+  const clampPlot=(px,py,b)=>({x:Math.max(b.l,Math.min(b.r,px)), y:Math.max(b.t,Math.min(b.b,py))});
+
   svgEl.addEventListener('mousedown',e=>{
     e.preventDefault();
     const rect=svgEl.getBoundingClientRect();
-    dragStart={x:Math.max(0,Math.min(rect.width,e.clientX-rect.left))};
-    sel.style.display='block';sel.style.left=dragStart.x+'px';sel.style.top='0px';sel.style.width='0px';sel.style.height=rect.height+'px';
-    window.addEventListener('mousemove',onWindowDrag);
-    window.addEventListener('mouseup',onWindowUp);
+    const b=plotBounds(rect);
+    const px=e.clientX-rect.left, py=e.clientY-rect.top;
+    if(px<b.l||px>b.r||py<b.t||py>b.b) return;
+    const c=clampPlot(px,py,b);
+    dragStart={x:c.x, y:c.y, bounds:b};
+    sel.style.display='block';sel.style.left=c.x+'px';sel.style.top=c.y+'px';sel.style.width='0px';sel.style.height=(b.b-c.y)+'px';
+    window.addEventListener('mousemove',onWinMove);
+    window.addEventListener('mouseup',onWinUp);
   });
-  const onMouseMove=e=>{
+
+  svgEl.addEventListener('mousemove',e=>{
+    if(dragStart) return;
     const rect=svgEl.getBoundingClientRect();
-    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
-    const clampY=Math.max(0,Math.min(rect.height,e.clientY-rect.top));
-    if(dragStart){
-      const x=Math.min(dragStart.x,clampX);
-      const w=Math.abs(clampX-dragStart.x);
-      sel.style.left=x+'px';sel.style.width=w+'px';
-      tooltip.style.display='none';
-      return;
-    }
-    const mx=clampX/rect.width*W;
-    const my2=clampY/rect.height*H;
+    const b=plotBounds(rect);
+    const px=e.clientX-rect.left, py=e.clientY-rect.top;
+    if(px<b.l||px>b.r||py<b.t||py>b.b){tooltip.style.display='none';return;}
+    const sv=pxToSvg(px,py,rect);
     const hits=[];
     allNets.forEach(net=>{
-      const ch=net.channel, rssi=net.rssi!=null?net.rssi:-75, span=widthToSpan(net.width, net.band);
-      const xl=xFor(ch-span/2), xr=xFor(ch+span/2), yp=yFor(rssi), yb=yFor(-100);
-      if(mx>=xl && mx<=xr && my2>=yp && my2<=yb) hits.push(net);
+      const slot=chToSlot(net.channel); if(slot<0)return;
+      const rssi=net.rssi!=null?net.rssi:-75;
+      const span=widthToSpan(net.width,net.band);
+      const xl=xSlot(slot-span/2),xr=xSlot(slot+span/2);
+      const yp=yFor(Math.max(rssiBottom,Math.min(rssiTop,rssi))),yb=yFor(rssiBottom);
+      if(sv.sx>=xl&&sv.sx<=xr&&sv.sy>=yp&&sv.sy<=yb) hits.push(net);
     });
     if(hits.length){
-      hits.sort((a,b)=>(b.rssi??-75)-(a.rssi??-75));
-      let html=`<div class="ttl">ch${hits[0].channel} 上的信号 (${hits.length}个)</div>`;
+      hits.sort((a,b2)=>(b2.rssi??-75)-(a.rssi??-75));
+      let html=`<div class="ttl">${bandLabel} / ch${hits[0].channel} 附近 (${hits.length}个)</div>`;
       hits.forEach(n=>{
         const name=n.anonymous?'(匿名RF)':(n.ssid||'(hidden)');
-        const rssi=n.rssi!=null?n.rssi:-75;
+        const rs=n.rssi!=null?n.rssi:-75;
         const src=n._dashed?`<span class="hist">历史 ${hm(n._ts)}</span>`:'<span class="cur">当前</span>';
-        html+=`<div class="itm">${src} <b>${esc(name)}</b> ${n.width||''} RSSI=${rssi} dBm</div>`;
+        html+=`<div class="itm">${src} <b>${esc(name)}</b> ${n.width||''} RSSI=${rs} dBm</div>`;
       });
-      tooltip.innerHTML=html;
-      tooltip.style.display='block';
-      const cardRect=card.getBoundingClientRect();
-      let tx=e.clientX-cardRect.left+16;
-      let ty=e.clientY-cardRect.top+16;
-      if(tx+380>cardRect.width) tx=e.clientX-cardRect.left-390;
-      if(ty+200>cardRect.height) ty=e.clientY-cardRect.top-210;
-      tooltip.style.left=Math.max(10,tx)+'px';
-      tooltip.style.top=Math.max(10,ty)+'px';
-    } else { tooltip.style.display='none'; }
-  };
-  svgEl.addEventListener('mousemove',onMouseMove);
-  const finishDrag=e=>{
+      tooltip.innerHTML=html;tooltip.style.display='block';
+      const cr=card.getBoundingClientRect();
+      let tx=e.clientX-cr.left+16,ty=e.clientY-cr.top+16;
+      if(tx+380>cr.width) tx=e.clientX-cr.left-390;
+      if(ty+220>cr.height) ty=e.clientY-cr.top-230;
+      tooltip.style.left=Math.max(10,tx)+'px';tooltip.style.top=Math.max(10,ty)+'px';
+    } else tooltip.style.display='none';
+  });
+
+  const onWinMove=e=>{
     if(!dragStart) return;
     const rect=svgEl.getBoundingClientRect();
-    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
-    const x0px=Math.min(dragStart.x,clampX), x1px=Math.max(dragStart.x,clampX);
+    const b=dragStart.bounds;
+    const c=clampPlot(e.clientX-rect.left, e.clientY-rect.top, b);
+    const x=Math.min(dragStart.x,c.x), top2=Math.min(dragStart.y,c.y);
+    sel.style.left=x+'px';sel.style.top=top2+'px';
+    sel.style.width=Math.abs(c.x-dragStart.x)+'px';
+    sel.style.height=Math.max(8, b.b-top2)+'px';
+    tooltip.style.display='none';
+  };
+  const onWinUp=e=>{
+    if(!dragStart) return;
+    const rect=svgEl.getBoundingClientRect();
+    const b=dragStart.bounds;
+    const c=clampPlot(e.clientX-rect.left, e.clientY-rect.top, b);
+    const x0=Math.min(dragStart.x,c.x), x1=Math.max(dragStart.x,c.x);
+    const topPx=Math.min(dragStart.y,c.y);
     sel.style.display='none';
-    if(Math.abs(x1px-x0px)>15){
-      const ch0=chMin+(x0px/rect.width)*(chMax-chMin||1);
-      const ch1=chMin+(x1px/rect.width)*(chMax-chMin||1);
-      spectrumZoom[bandLabel]={min:Math.max(Math.min(...baseChannels),Math.floor(Math.min(ch0,ch1))),max:Math.min(Math.max(...baseChannels),Math.ceil(Math.max(ch0,ch1)))};
+    if(Math.abs(x1-x0)>15){
+      const sv0=pxToSvg(x0,0,rect), sv1=pxToSvg(x1,0,rect), svTop=pxToSvg(0,topPx,rect);
+      const newSlotMin=slotMin+((sv0.sx-marginL)/plotW)*slotRange;
+      const newSlotMax=slotMin+((sv1.sx-marginL)/plotW)*slotRange;
+      const newRssiTop=rssiFromY(svTop.sy);
+      spectrumZoom[bandLabel]={
+        slotMin:Math.max(0,Math.min(baseChannels.length-1,newSlotMin)),
+        slotMax:Math.max(0,Math.min(baseChannels.length-1,newSlotMax)),
+        rssiTop:Math.max(-95,Math.min(-20,newRssiTop)),
+      };
       triggerSliderUpdate();
     }
     dragStart=null;
-    window.removeEventListener('mousemove',onWindowDrag);
-    window.removeEventListener('mouseup',onWindowUp);
+    window.removeEventListener('mousemove',onWinMove);
+    window.removeEventListener('mouseup',onWinUp);
   };
-  const onWindowDrag=e=>{
-    if(!dragStart) return;
-    const rect=svgEl.getBoundingClientRect();
-    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
-    const x=Math.min(dragStart.x,clampX);
-    const w=Math.abs(clampX-dragStart.x);
-    sel.style.left=x+'px';sel.style.width=w+'px';
-  };
-  const onWindowUp=e=>{finishDrag(e);};
-  svgEl.addEventListener('mouseleave',e=>{ if(!dragStart) tooltip.style.display='none'; });
+  svgEl.addEventListener('mouseleave',()=>{if(!dragStart) tooltip.style.display='none';});
 }
 
 /* ===== PAGE RENDERERS ===== */

@@ -124,7 +124,7 @@ nav .ts{font-size:12px;color:var(--muted)}
         <button id="ch-reset-24" class="badge" style="background:transparent;color:var(--text);cursor:pointer">重置缩放</button>
       </div>
       <div class="chart-wrap" id="ch-spec24-wrap"></div>
-      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备</div>
     </div>
     <div class="card c12">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
@@ -132,7 +132,7 @@ nav .ts{font-size:12px;color:var(--muted)}
         <button id="ch-reset-5" class="badge" style="background:transparent;color:var(--text);cursor:pointer">重置缩放</button>
       </div>
       <div class="chart-wrap" id="ch-spec5-wrap"></div>
-      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　拖动鼠标可框选放大　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备</div>
     </div>
     <div class="card c12">
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;flex-wrap:wrap">
@@ -141,7 +141,7 @@ nav .ts{font-size:12px;color:var(--muted)}
         <input type="range" id="ch-time-slider" min="0" max="0" value="0" style="flex:1;accent-color:var(--accent);min-width:200px">
         <span class="sm" id="ch-time-label">无历史</span>
       </div>
-      <div class="sm">勾选「实时刷新」时滑块自动跟随最新数据。取消勾选后可自由拖动滑块分析历史，不会被新数据打断。滑块最右 = 仅看当前频谱，向左拖 = 叠加该时刻的虚线梯形做对比。</div>
+      <div class="sm">勾选「实时刷新」时滑块自动跟随最新数据。取消勾选后可自由拖动滑块分析历史，不会被新数据打断。滑块最右 = 当前频谱，向左拖 = 直接查看该时刻的历史频谱与信道数据。</div>
     </div>
     <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
     <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
@@ -636,11 +636,10 @@ function renderChannelsPage(cur, history){
     const idx=Number(slider.value);
     const isLatest=(idx>=fullSnapshots.length-1);
     const selected=isLatest?cur:fullSnapshots[idx];
-    const cmp=isLatest?null:fullSnapshots[idx];
-    label.textContent=isLatest?'仅当前（拖左查看历史对比）':`${fullSnapshots[idx].timestamp||'历史'}（冻结视图）`;
+    label.textContent=isLatest?'实时':'历史快照：'+(fullSnapshots[idx].timestamp||'');
     if(!specDragging){
-      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
-      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),selected,null,'2.4GHz');
+      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),selected,null,'5GHz');
     }
     cur=selected;
   } else {
@@ -706,10 +705,9 @@ function triggerSliderUpdate(){
   const isLatest=(idx>=fullSnapshots.length-1);
   const cur=fullSnapshots.length?fullSnapshots[fullSnapshots.length-1]:{};
   const selected=isLatest?cur:(fullSnapshots[idx]||cur);
-  const cmp=isLatest?null:fullSnapshots[idx];
-  document.getElementById('ch-time-label').textContent=isLatest?'仅当前（拖左查看历史对比）':`${(fullSnapshots[idx]?.timestamp)||'历史'}（冻结视图）`;
-  makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
-  makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+  document.getElementById('ch-time-label').textContent=isLatest?'实时':'历史快照：'+((fullSnapshots[idx]?.timestamp)||'');
+  makeSpectrumChart(document.getElementById('ch-spec24-wrap'),selected,null,'2.4GHz');
+  makeSpectrumChart(document.getElementById('ch-spec5-wrap'),selected,null,'5GHz');
   const sn=selected;
   const cn2=sn.channel_networks||{};
   const my2=String(sn.channel??'');

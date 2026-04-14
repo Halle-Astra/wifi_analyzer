@@ -105,6 +105,24 @@ nav .ts{font-size:12px;color:var(--muted)}
 <!-- ===== PAGE: CHANNELS ===== -->
 <div class="page" id="p-channels">
   <div class="grid">
+    <div class="card c12">
+      <div class="sec">2.4GHz 频谱图</div>
+      <div class="chart-wrap" id="ch-spec24-wrap"></div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40MHz)　高度 = 信号强度(RSSI)　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+    </div>
+    <div class="card c12">
+      <div class="sec">5GHz 频谱图</div>
+      <div class="chart-wrap" id="ch-spec5-wrap"></div>
+      <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
+    </div>
+    <div class="card c12">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+        <span class="sec" style="margin:0">时间对比</span>
+        <input type="range" id="ch-time-slider" min="0" max="0" value="0" style="flex:1;accent-color:var(--accent)">
+        <span class="sm" id="ch-time-label">当前</span>
+      </div>
+      <div class="sm">拖动滑块回溯历史快照，与当前频谱对比（虚线 = 历史）</div>
+    </div>
     <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
     <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
     <div class="card c12"><div class="sec">各信道设备明细</div><div id="ch-list"></div></div>
@@ -279,6 +297,71 @@ function makeTimeline(wrap, events){
   wrap.innerHTML=svg;
 }
 
+function widthToSpan(width, band){
+  const w=(width||'').toUpperCase();
+  if(band && String(band).includes('2.4')){
+    if(w.includes('40')) return 4;
+    return 2;
+  }
+  if(w.includes('160')) return 8;
+  if(w.includes('80')) return 4;
+  if(w.includes('40')) return 2;
+  return 1;
+}
+
+function netColor(net, currentNames){
+  if(net.anonymous) return '#ff5d73';
+  if(currentNames.has(net.ssid||'')) return '#21c77a';
+  return '#68a0ff';
+}
+
+function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
+  const W=1000, H=280, marginL=50, marginR=16, marginT=24, marginB=36;
+  const plotW=W-marginL-marginR, plotH=H-marginT-marginB;
+  const nets=[];
+  const currentNames=new Set([snapshot.ssid||'']);
+  const channels=bandLabel==='2.4GHz' ? [1,2,3,4,5,6,7,8,9,10,11,12,13] : [36,40,44,48,52,56,60,64,149,153,157,161,165];
+  const chMin=Math.min(...channels), chMax=Math.max(...channels);
+  const xFor=ch=>marginL+(ch-chMin)/(chMax-chMin||1)*plotW;
+  const yFor=rssi=>marginT+plotH-((rssi+100)/70)*plotH;
+  Object.entries(snapshot.channel_networks||{}).forEach(([ch,items])=>{
+    items.forEach(net=>{
+      const band=(net.band||'').replace('2GHz','2.4GHz');
+      if(band.includes(bandLabel)) nets.push({...net, channel:Number(ch)});
+    });
+  });
+  const compare=[];
+  if(compareSnapshot){
+    Object.entries(compareSnapshot.channel_networks||{}).forEach(([ch,items])=>{
+      items.forEach(net=>{
+        const band=(net.band||'').replace('2GHz','2.4GHz');
+        if(band.includes(bandLabel)) compare.push({...net, channel:Number(ch)});
+      });
+    });
+  }
+  let svg=`<svg viewBox="0 0 ${W} ${H}" style="height:${H}px">`;
+  for(let r=-90;r<=-20;r+=10){const y=yFor(r);svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.05)"/><text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${r}</text>`;}
+  channels.forEach(ch=>{const x=xFor(ch);svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/><text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="10" text-anchor="middle">${ch}</text>`;});
+  svg+=`<text x="6" y="${marginT-6}" fill="var(--muted)" font-size="10">RSSI(dBm)</text>`;
+  function drawNet(net, dashed){
+    const ch=net.channel;
+    const rssi=net.rssi!=null?net.rssi:-75;
+    const span=widthToSpan(net.width, net.band);
+    const x0=xFor(ch-span/2), x1=xFor(ch), x2=xFor(ch+span/2);
+    const yBase=yFor(-100), yPeak=yFor(rssi), yShoulder=yFor(Math.max(-95, rssi-10));
+    const color=dashed?'rgba(255,255,255,.18)':netColor(net,currentNames);
+    const dash=dashed?'6 5':'none';
+    const fill=dashed?'rgba(255,255,255,.03)':color+'22';
+    const label=net.anonymous?'匿名':(net.ssid||'hidden');
+    svg+=`<path d="M ${x0.toFixed(1)} ${yBase.toFixed(1)} L ${((x0+x1)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x1.toFixed(1)} ${yPeak.toFixed(1)} L ${((x1+x2)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x2.toFixed(1)} ${yBase.toFixed(1)}" fill="${fill}" stroke="${color}" stroke-width="2" stroke-dasharray="${dash}"><title>${esc(label)} ch${ch} ${net.width||''} RSSI=${rssi}</title></path>`;
+    if(!dashed) svg+=`<text x="${x1.toFixed(1)}" y="${(yPeak-6).toFixed(1)}" fill="${color}" font-size="10" text-anchor="middle">${esc(label)}</text>`;
+  }
+  compare.forEach(n=>drawNet(n,true));
+  nets.forEach(n=>drawNet(n,false));
+  svg+='</svg>';
+  wrap.innerHTML=svg;
+}
+
 /* ===== PAGE RENDERERS ===== */
 
 function renderDashboard(cur, history, events){
@@ -331,10 +414,27 @@ function renderSignal(history){
   ]});
 }
 
+let fullSnapshots=[];
+let compareIndex=null;
+
 function renderChannelsPage(cur, history){
   const cn=cur.channel_networks||{};
   const summaries=cur.rf_channel_summary||{};
   const my=String(cur.channel??'');
+  const slider=document.getElementById('ch-time-slider');
+  const label=document.getElementById('ch-time-label');
+  if(fullSnapshots.length){
+    slider.max=Math.max(0, fullSnapshots.length-1);
+    if(compareIndex==null) compareIndex=fullSnapshots.length-1;
+    slider.value=compareIndex;
+    const cmp=fullSnapshots[compareIndex];
+    label.textContent=(compareIndex===fullSnapshots.length-1||!cmp)?'当前':(cmp.timestamp||'历史');
+    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
+    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+  } else {
+    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
+    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
+  }
   makeBarChart(document.getElementById('ch-bar-wrap'),cn,my);
   // channel trend over time
   makeChart(document.getElementById('ch-trend-wrap'),{data:history,height:220,rightAxis:true,series:[
@@ -371,10 +471,24 @@ function renderEventsPage(events){
   </div>`).join(''):'<div class="sm" style="padding:16px">暂无事件记录</div>';
 }
 
+/* ===== SLIDER ===== */
+document.getElementById('ch-time-slider').addEventListener('input', function(){
+  compareIndex=Number(this.value);
+  const cmp=fullSnapshots[compareIndex];
+  document.getElementById('ch-time-label').textContent=(compareIndex===fullSnapshots.length-1||!cmp)?'当前':(cmp.timestamp||'历史');
+  if(fullSnapshots.length){
+    const cur=fullSnapshots[fullSnapshots.length-1];
+    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
+    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+  }
+});
+
 /* ===== REFRESH LOOP ===== */
 async function refresh(){
   try{
-    const [cur,history,events]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events')]);
+    const [cur,history,events,snapshots]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events'),api('/api/snapshots')]);
+    fullSnapshots=snapshots;
+    if(compareIndex!=null && compareIndex>=fullSnapshots.length) compareIndex=Math.max(0,fullSnapshots.length-1);
     renderDashboard(cur,history,events);
     renderSignal(history);
     renderChannelsPage(cur, history);

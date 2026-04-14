@@ -43,6 +43,7 @@ class MonitorState:
         self.current = None
         self.prev = None
         self.history = collections.deque(maxlen=max_history)
+        self.full_history = collections.deque(maxlen=max_history)
         self.events = collections.deque(maxlen=200)
         self.running = True
 
@@ -66,6 +67,7 @@ def sampler_loop(interval, log_dir):
         with state.lock:
             state.prev = state.current
             state.current = snapshot
+            state.full_history.append(snapshot)
             state.history.append({
                 "timestamp": snapshot.get("timestamp"),
                 "signal_dbm": snapshot.get("signal_dbm"),
@@ -135,6 +137,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/history":
             with state.lock:
                 data = list(state.history)
+            self._json_response(data)
+
+        elif path == "/api/snapshots":
+            with state.lock:
+                data = list(state.full_history)
             self._json_response(data)
 
         elif path == "/api/events":

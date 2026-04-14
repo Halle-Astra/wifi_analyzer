@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""
+WiFi Channel Monitor — continuously records WiFi metrics for later analysis.
+
+Data collected every interval:
+  - Connection status, SSID, BSSID (if available)
+  - Channel, bandwidth, PHY mode
+  - Signal strength (RSSI) and noise floor (dBm)
+  - SNR (signal-to-noise ratio)
+  - TX rate, MCS index
+  - Number of neighboring networks and per-channel counts
+  - Internet connectivity (ping test)
+
+Output: CSV log + JSON events log, rotated daily.
+"""
+
+import argparse
+import csv
+import datetime
+import json
+import os
+import re
+import subprocess
+import signal
+import sys
+import time
+
+DEFAULT_INTERVAL = 10  # seconds
+DEFAULT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+PING_TARGET = "223.5.5.5"  # Alibaba DNS, low latency in China
+PING_TIMEOUT = 3  # seconds
+
+running = True
+
+
+def handle_signal(signum, frame):
+    global running
+    running = False
+    print(f"\n[{now()}] Received signal {signum}, stopping gracefully...")
+
+
+def now():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def today():
+    return datetime.datetime.now().strftime("%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# Data collection
+# ---------------------------------------------------------------------------
+
+def get_wifi_data():
+    """Collect WiFi info via system_profiler JSON output."""
+    try:
+        result = subprocess.run(
+            ["system_profiler", "SPAirPortDataType", "-json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        data = json.loads(result.stdout)
+        iface = data["SPAirPortDataType"][0]["spairport_airport_interfaces"][0]
+        return iface
+    except Exception as exc:
+        return {"_error": str(exc)}
+
+
+def parse_signal_noise(raw):
+    """Parse '-51 dBm / -94 dBm' into (signal, noise) integers."""
+    match = re.findall(r"(-?\d+)\s*dBm", raw or "")
+    if len(match) >= 2:
+        return int(match[0]), int(match[1])
+    return None, None
+
+
+def parse_channel_info(raw):
+    """Parse '157 (5GHz, 40MHz)' into (channel, band, width)."""
+    match = re.match(r"(\d+)\s*\((\S+?),\s*(\S+?)\)", raw or "")
+    if match:
+        return int(match.group(1)), match.group(2), match.group(3)
+    return None, None, None
+
+
+def ping_test(target=PING_TARGET, timeout=PING_TIMEOUT):
+    """Return (reachable: bool, latency_ms: float|None)."""
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", str(timeout * 1000), target],
+            capture_output=True, text=True, timeout=timeout + 2,
+        )
+        if result.returncode == 0:
+            match = re.search(r"time[=<]([\d.]+)\s*ms", result.stdout)
+            latency = float(match.group(1)) if match else None
+            return True, latency
+    except Exception:
+        pass
+    return False, None
+
+
+def count_neighbors(iface):
+    """Count neighboring networks and group by channel, with full details."""
+    networks = iface.get("spairport_airport_other_local_wireless_networks", [])
+    channel_counts = {}
+    channel_networks = {}
+    for net in networks:
+        ch_raw = net.get("spairport_network_channel", "")
+        ch, band, width = parse_channel_info(ch_raw)
+        if ch is not None:
+            channel_counts[ch] = channel_counts.get(ch, 0) + 1
+            if ch not in channel_networks:
+                channel_networks[ch] = []
+            channel_networks[ch].append({
+                "ssid": net.get("_name", ""),
+                "channel_raw": ch_raw,
+                "band": band,
+                "width": width,
+                "phy_mode": net.get("spairport_network_phymode", ""),
+                "security": net.get("spairport_security_mode", ""),
+            })
+    return len(networks), channel_counts, channel_networks
+
+
+SCANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_scanner")
+
+
+def rf_scan():
+    """Run Swift WiFi scanner for per-device RSSI and hidden network detection."""
+    if not os.path.isfile(SCANNER_PATH):
+        return None
+    try:
+        result = subprocess.run(
+            [SCANNER_PATH], capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+    except Exception:
+        pass
+    return None
+
+
+BW_NAMES = {0: "20MHz", 1: "20MHz", 2: "40MHz", 3: "80MHz", 4: "160MHz"}
+BAND_NAMES = {0: "unknown", 1: "2.4GHz", 2: "5GHz"}
+
+
+def merge_rf_data(channel_networks, rf_data):
+    """Merge Swift RF scan data into channel_networks.
+
+    - Adds RSSI to named networks where we can match by channel
+    - Appends anonymous entries for devices only seen in RF scan
+    """
+    if not rf_data or "networks" not in rf_data:
+        return channel_networks, {}
+
+    rf_by_channel = {}
+    for net in rf_data["networks"]:
+        ch = net.get("channel", 0)
+        if ch not in rf_by_channel:
+            rf_by_channel[ch] = []
+        rf_by_channel[ch].append(net)
+
+    rf_channel_summary = {}
+    all_channels = set(channel_networks.keys()) | set(rf_by_channel.keys())
+    for ch in all_channels:
+        named = channel_networks.get(ch, [])
+        rf_list = rf_by_channel.get(ch, [])
+
+        named_count = len(named)
+        rf_count = len(rf_list)
+        anonymous_count = max(0, rf_count - named_count)
+
+        rssi_values = [n["rssi"] for n in rf_list]
+        noise_values = [n["noise"] for n in rf_list if n.get("noise", 0) != 0]
+
+        rf_channel_summary[ch] = {
+            "named_count": named_count,
+            "rf_total_count": rf_count,
+            "anonymous_count": anonymous_count,
+            "rssi_values": rssi_values,
+            "rssi_min": min(rssi_values) if rssi_values else None,
+            "rssi_max": max(rssi_values) if rssi_values else None,
+            "rssi_avg": round(sum(rssi_values) / len(rssi_values), 1) if rssi_values else None,
+            "noise_values": noise_values,
+        }
+
+        if anonymous_count > 0:
+            matched_rssi = sorted(rssi_values, reverse=True)[:named_count]
+            unmatched_rssi = sorted(rssi_values, reverse=True)[named_count:]
+            for idx, rssi in enumerate(unmatched_rssi):
+                bw_raw = rf_list[named_count + idx]["channelWidth"] if (named_count + idx) < len(rf_list) else 0
+                band_raw = rf_list[named_count + idx]["channelBand"] if (named_count + idx) < len(rf_list) else 0
+                if ch not in channel_networks:
+                    channel_networks[ch] = []
+                channel_networks[ch].append({
+                    "ssid": "",
+                    "channel_raw": "",
+                    "band": BAND_NAMES.get(band_raw, ""),
+                    "width": BW_NAMES.get(bw_raw, ""),
+                    "phy_mode": "",
+                    "security": "",
+                    "rssi": rssi,
+                    "anonymous": True,
+                })
+
+    return channel_networks, rf_channel_summary
+
+
+def scan_bluetooth():
+    """Scan nearby Bluetooth devices via system_profiler."""
+    try:
+        result = subprocess.run(
+            ["system_profiler", "SPBluetoothDataType", "-json"],
+            capture_output=True, text=True, timeout=10,
+        )
+        data = json.loads(result.stdout)
+        bt = data.get("SPBluetoothDataType", [{}])[0]
+
+        devices = []
+        for category_key in ["device_connected", "device_not_connected"]:
+            category = bt.get(category_key, [])
+            if isinstance(category, list):
+                for item in category:
+                    if isinstance(item, dict):
+                        for name, info in item.items():
+                            dev = {
+                                "name": name,
+                                "connected": category_key == "device_connected",
+                                "address": info.get("device_address", ""),
+                                "type": info.get("device_minorType", ""),
+                                "rssi": info.get("device_rssi", ""),
+                            }
+                            devices.append(dev)
+
+        return devices
+    except Exception:
+        return []
+
+
+def collect_snapshot():
+    """Collect a single snapshot of WiFi state."""
+    iface = get_wifi_data()
+    if "_error" in iface:
+        return {
+            "timestamp": now(),
+            "status": "error",
+            "error": iface["_error"],
+        }
+
+    status_raw = iface.get("spairport_status_information", "")
+    connected = "connected" in status_raw.lower()
+
+    current = iface.get("spairport_current_network_information", {})
+    ssid = current.get("_name")
+    channel_raw = current.get("spairport_network_channel")
+    channel, band, width = parse_channel_info(channel_raw)
+    phy = current.get("spairport_network_phymode")
+    signal, noise = parse_signal_noise(current.get("spairport_signal_noise"))
+    snr = (signal - noise) if (signal is not None and noise is not None) else None
+    tx_rate = current.get("spairport_network_rate")
+    mcs = current.get("spairport_network_mcs")
+    security = current.get("spairport_security_mode")
+
+    neighbor_count, channel_dist, channel_networks = count_neighbors(iface)
+
+    rf_data = rf_scan()
+    channel_networks, rf_channel_summary = merge_rf_data(channel_networks, rf_data)
+
+    bt_devices = scan_bluetooth()
+
+    reachable, latency = ping_test()
+
+    same_channel_neighbors = channel_dist.get(channel, 0) if channel else 0
+
+    rf_total = rf_data.get("totalCount", 0) if rf_data else 0
+    rf_hidden = rf_data.get("hiddenCount", 0) if rf_data else 0
+    anonymous_total = max(0, rf_total - neighbor_count) if rf_data else 0
+
+    return {
+        "timestamp": now(),
+        "status": "connected" if connected else "disconnected",
+        "ssid": ssid,
+        "channel": channel,
+        "band": band,
+        "width": width,
+        "phy_mode": phy,
+        "signal_dbm": signal,
+        "noise_dbm": noise,
+        "snr_db": snr,
+        "tx_rate_mbps": tx_rate,
+        "mcs_index": mcs,
+        "security": security,
+        "neighbor_count": neighbor_count,
+        "same_channel_neighbors": same_channel_neighbors,
+        "channel_distribution": channel_dist,
+        "channel_networks": channel_networks,
+        "rf_total_devices": rf_total,
+        "anonymous_devices": anonymous_total,
+        "rf_channel_summary": rf_channel_summary,
+        "bluetooth_devices": bt_devices,
+        "bluetooth_device_count": len(bt_devices),
+        "internet_reachable": reachable,
+        "ping_latency_ms": latency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+CSV_FIELDS = [
+    "timestamp", "status", "ssid", "channel", "band", "width", "phy_mode",
+    "signal_dbm", "noise_dbm", "snr_db", "tx_rate_mbps", "mcs_index",
+    "security", "neighbor_count", "same_channel_neighbors",
+    "rf_total_devices", "anonymous_devices", "bluetooth_device_count",
+    "internet_reachable", "ping_latency_ms",
+]
+
+
+def ensure_log_dir(log_dir):
+    os.makedirs(log_dir, exist_ok=True)
+
+
+def csv_path(log_dir):
+    return os.path.join(log_dir, f"wifi_{today()}.csv")
+
+
+def json_path(log_dir):
+    return os.path.join(log_dir, f"wifi_{today()}.jsonl")
+
+
+def write_csv_row(snapshot, log_dir):
+    path = csv_path(log_dir)
+    file_exists = os.path.isfile(path)
+    with open(path, "a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(snapshot)
+
+
+def write_json_line(snapshot, log_dir):
+    path = json_path(log_dir)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Event detection
+# ---------------------------------------------------------------------------
+
+def detect_events(prev, curr):
+    """Compare two snapshots and return a list of notable events."""
+    events = []
+    if prev is None:
+        return events
+
+    if prev.get("status") == "connected" and curr.get("status") != "connected":
+        events.append({"type": "DISCONNECT", "detail": f"Was on {prev.get('ssid')} ch{prev.get('channel')}"})
+
+    if prev.get("status") != "connected" and curr.get("status") == "connected":
+        events.append({"type": "RECONNECT", "detail": f"Now on {curr.get('ssid')} ch{curr.get('channel')}"})
+
+    if (prev.get("status") == "connected" and curr.get("status") == "connected"
+            and prev.get("channel") and curr.get("channel")
+            and prev.get("channel") != curr.get("channel")):
+        events.append({
+            "type": "CHANNEL_CHANGE",
+            "detail": f"{prev.get('channel')} -> {curr.get('channel')}",
+        })
+
+    if prev.get("internet_reachable") and not curr.get("internet_reachable"):
+        events.append({"type": "INTERNET_LOST", "detail": "Ping failed"})
+
+    if not prev.get("internet_reachable") and curr.get("internet_reachable"):
+        events.append({"type": "INTERNET_RESTORED", "detail": f"Latency {curr.get('ping_latency_ms')}ms"})
+
+    prev_snr = prev.get("snr_db")
+    curr_snr = curr.get("snr_db")
+    if prev_snr is not None and curr_snr is not None and (prev_snr - curr_snr) >= 10:
+        events.append({
+            "type": "SNR_DROP",
+            "detail": f"SNR dropped {prev_snr} -> {curr_snr} dB",
+        })
+
+    curr_signal = curr.get("signal_dbm")
+    if curr_signal is not None and curr_signal > -30:
+        events.append({"type": "SIGNAL_ANOMALY", "detail": f"Unusually strong signal {curr_signal} dBm"})
+    elif curr_signal is not None and curr_signal < -75:
+        events.append({"type": "WEAK_SIGNAL", "detail": f"Signal {curr_signal} dBm"})
+
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+def print_snapshot(snapshot, events):
+    """Pretty-print one snapshot to terminal."""
+    status = snapshot.get("status", "?")
+    ssid = snapshot.get("ssid") or "-"
+    ch = snapshot.get("channel") or "-"
+    band = snapshot.get("band") or ""
+    signal_val = snapshot.get("signal_dbm")
+    noise = snapshot.get("noise_dbm")
+    snr = snapshot.get("snr_db")
+    tx = snapshot.get("tx_rate_mbps")
+    ping_ok = snapshot.get("internet_reachable")
+    latency = snapshot.get("ping_latency_ms")
+    neighbors = snapshot.get("neighbor_count", 0)
+    same_ch = snapshot.get("same_channel_neighbors", 0)
+    rf_total = snapshot.get("rf_total_devices", 0)
+    anon = snapshot.get("anonymous_devices", 0)
+    bt_count = snapshot.get("bluetooth_device_count", 0)
+
+    sig_str = f"{signal_val}" if signal_val is not None else "-"
+    noise_str = f"{noise}" if noise is not None else "-"
+    snr_str = f"{snr}" if snr is not None else "-"
+    tx_str = f"{tx}" if tx is not None else "-"
+    lat_str = f"{latency:.1f}ms" if latency is not None else "FAIL"
+    ping_icon = "OK" if ping_ok else "FAIL"
+
+    line = (
+        f"[{snapshot['timestamp']}] "
+        f"{status:>12} | {ssid:<16} | ch{ch:>4} {band:>5} | "
+        f"sig={sig_str:>4} noise={noise_str:>4} SNR={snr_str:>3} | "
+        f"tx={tx_str:>4}Mbps | "
+        f"nbr={neighbors:>2}(same_ch={same_ch}) rf={rf_total} anon={anon} bt={bt_count} | "
+        f"inet={ping_icon} {lat_str}"
+    )
+    print(line)
+
+    for event in events:
+        print(f"  *** [{event['type']}] {event['detail']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="WiFi Channel Monitor")
+    parser.add_argument("-i", "--interval", type=int, default=DEFAULT_INTERVAL,
+                        help=f"Sampling interval in seconds (default: {DEFAULT_INTERVAL})")
+    parser.add_argument("-d", "--log-dir", default=DEFAULT_LOG_DIR,
+                        help=f"Log output directory (default: {DEFAULT_LOG_DIR})")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Suppress terminal output (log only)")
+    args = parser.parse_args()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    ensure_log_dir(args.log_dir)
+
+    print(f"[{now()}] WiFi Monitor started")
+    print(f"  Interval : {args.interval}s")
+    print(f"  Log dir  : {args.log_dir}")
+    print(f"  Ping test: {PING_TARGET}")
+    scanner_ok = os.path.isfile(SCANNER_PATH)
+    print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled (wifi_scanner not found, run: swiftc -framework CoreWLAN -framework Foundation wifi_scanner.swift -o wifi_scanner)'}")
+    print(f"  BT scan  : enabled")
+    print("-" * 120)
+
+    prev_snapshot = None
+
+    while running:
+        snapshot = collect_snapshot()
+        events = detect_events(prev_snapshot, snapshot)
+        snapshot["events"] = [e["type"] for e in events]
+
+        write_csv_row(snapshot, args.log_dir)
+        write_json_line(snapshot, args.log_dir)
+
+        if not args.quiet:
+            print_snapshot(snapshot, events)
+
+        prev_snapshot = snapshot
+
+        for _ in range(args.interval * 10):
+            if not running:
+                break
+            time.sleep(0.1)
+
+    print(f"[{now()}] Monitor stopped. Logs saved to {args.log_dir}/")
+
+
+if __name__ == "__main__":
+    main()

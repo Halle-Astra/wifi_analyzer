@@ -105,7 +105,8 @@ nav .ts{font-size:12px;color:var(--muted)}
 <!-- ===== PAGE: CHANNELS ===== -->
 <div class="page" id="p-channels">
   <div class="grid">
-    <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div></div>
+    <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
+    <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
     <div class="card c12"><div class="sec">各信道设备明细</div><div id="ch-list"></div></div>
   </div>
 </div>
@@ -330,11 +331,17 @@ function renderSignal(history){
   ]});
 }
 
-function renderChannelsPage(cur){
+function renderChannelsPage(cur, history){
   const cn=cur.channel_networks||{};
   const summaries=cur.rf_channel_summary||{};
   const my=String(cur.channel??'');
   makeBarChart(document.getElementById('ch-bar-wrap'),cn,my);
+  // channel trend over time
+  makeChart(document.getElementById('ch-trend-wrap'),{data:history,height:220,rightAxis:true,series:[
+    {key:'neighbor_count',color:'#68a0ff',unit:'数量',min:0,width:2.5,decimals:0},
+    {key:'anonymous_devices',color:'#ff5d73',axis:'right',min:0,width:2,decimals:0},
+    {key:'same_channel_neighbors',color:'#21c77a',min:0,width:2,decimals:0},
+  ]});
   const keys=Object.keys(cn).sort((a,b)=>Number(a)-Number(b));
   const el=document.getElementById('ch-list');
   el.innerHTML=keys.length?keys.map(k=>{
@@ -370,7 +377,7 @@ async function refresh(){
     const [cur,history,events]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events')]);
     renderDashboard(cur,history,events);
     renderSignal(history);
-    renderChannelsPage(cur);
+    renderChannelsPage(cur, history);
     renderEventsPage(events);
   }catch(e){console.error(e);}
 }

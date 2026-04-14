@@ -20,7 +20,7 @@ nav .ts{font-size:12px;color:var(--muted)}
 .page{display:none;padding:22px 24px;max-width:1440px;margin:0 auto}
 .page.active{display:block}
 .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.18);position:relative}
 .c3{grid-column:span 3}.c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c12{grid-column:span 12}
 .sec{font-size:13px;color:var(--muted);margin-bottom:10px;font-weight:600}
 .val{font-size:28px;font-weight:700;line-height:1.2}
@@ -34,7 +34,7 @@ nav .ts{font-size:12px;color:var(--muted)}
 .channel-box{border:1px solid rgba(104,160,255,.15);border-radius:var(--radius);padding:12px;margin-bottom:10px;background:rgba(255,255,255,.015)}
 .channel-box.mine{border-color:rgba(33,199,122,.4)}
 /* CHART */
-.chart-wrap{position:relative;background:rgba(255,255,255,.02);border-radius:var(--radius);overflow:visible}
+.chart-wrap{position:relative;background:rgba(255,255,255,.02);border-radius:var(--radius);overflow:visible;user-select:none;-webkit-user-select:none}
 .chart-wrap svg{display:block;width:100%;height:auto}
 .chart-wrap svg .trap-label { opacity: 0; transition: opacity .15s; pointer-events: none; }
 .chart-wrap svg .trap-group:hover .trap-label { opacity: 1; }
@@ -396,20 +396,26 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   const svgEl=wrap.querySelector('svg');
   let dragStart=null;
   svgEl.addEventListener('mousedown',e=>{
+    e.preventDefault();
     const rect=svgEl.getBoundingClientRect();
-    dragStart={x:e.clientX-rect.left,y:e.clientY-rect.top};
-    sel.style.display='block';sel.style.left=dragStart.x+'px';sel.style.top=dragStart.y+'px';sel.style.width='0px';sel.style.height='0px';
+    dragStart={x:Math.max(0,Math.min(rect.width,e.clientX-rect.left))};
+    sel.style.display='block';sel.style.left=dragStart.x+'px';sel.style.top='0px';sel.style.width='0px';sel.style.height=rect.height+'px';
+    window.addEventListener('mousemove',onWindowDrag);
+    window.addEventListener('mouseup',onWindowUp);
   });
-  svgEl.addEventListener('mousemove',e=>{
+  const onMouseMove=e=>{
     const rect=svgEl.getBoundingClientRect();
-    const mx=(e.clientX-rect.left)/rect.width*W;
-    const my2=(e.clientY-rect.top)/rect.height*H;
+    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
+    const clampY=Math.max(0,Math.min(rect.height,e.clientY-rect.top));
     if(dragStart){
-      const x=Math.min(dragStart.x,e.clientX-rect.left), y=Math.min(dragStart.y,e.clientY-rect.top);
-      const w=Math.abs((e.clientX-rect.left)-dragStart.x), h=Math.abs((e.clientY-rect.top)-dragStart.y);
-      sel.style.left=x+'px';sel.style.top=y+'px';sel.style.width=w+'px';sel.style.height=h+'px';
+      const x=Math.min(dragStart.x,clampX);
+      const w=Math.abs(clampX-dragStart.x);
+      sel.style.left=x+'px';sel.style.width=w+'px';
+      tooltip.style.display='none';
       return;
     }
+    const mx=clampX/rect.width*W;
+    const my2=clampY/rect.height*H;
     const hits=[];
     allNets.forEach(net=>{
       const ch=net.channel, rssi=net.rssi!=null?net.rssi:-75, span=widthToSpan(net.width, net.band);
@@ -430,26 +436,38 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
       const cardRect=card.getBoundingClientRect();
       let tx=e.clientX-cardRect.left+16;
       let ty=e.clientY-cardRect.top+16;
-      if(tx+360>cardRect.width) tx=cardRect.width-360;
-      if(ty+180>cardRect.height) ty=Math.max(10,e.clientY-cardRect.top-190);
+      if(tx+380>cardRect.width) tx=e.clientX-cardRect.left-390;
+      if(ty+200>cardRect.height) ty=e.clientY-cardRect.top-210;
       tooltip.style.left=Math.max(10,tx)+'px';
       tooltip.style.top=Math.max(10,ty)+'px';
     } else { tooltip.style.display='none'; }
-  });
+  };
+  svgEl.addEventListener('mousemove',onMouseMove);
   const finishDrag=e=>{
     if(!dragStart) return;
     const rect=svgEl.getBoundingClientRect();
-    const x0=Math.min(dragStart.x,e.clientX-rect.left), x1=Math.max(dragStart.x,e.clientX-rect.left);
+    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
+    const x0px=Math.min(dragStart.x,clampX), x1px=Math.max(dragStart.x,clampX);
     sel.style.display='none';
-    if(Math.abs(x1-x0)>20){
-      const ch0=chMin+(x0/rect.width)*(chMax-chMin||1);
-      const ch1=chMin+(x1/rect.width)*(chMax-chMin||1);
+    if(Math.abs(x1px-x0px)>15){
+      const ch0=chMin+(x0px/rect.width)*(chMax-chMin||1);
+      const ch1=chMin+(x1px/rect.width)*(chMax-chMin||1);
       spectrumZoom[bandLabel]={min:Math.max(Math.min(...baseChannels),Math.floor(Math.min(ch0,ch1))),max:Math.min(Math.max(...baseChannels),Math.ceil(Math.max(ch0,ch1)))};
       triggerSliderUpdate();
     }
     dragStart=null;
+    window.removeEventListener('mousemove',onWindowDrag);
+    window.removeEventListener('mouseup',onWindowUp);
   };
-  svgEl.addEventListener('mouseup',finishDrag);
+  const onWindowDrag=e=>{
+    if(!dragStart) return;
+    const rect=svgEl.getBoundingClientRect();
+    const clampX=Math.max(0,Math.min(rect.width,e.clientX-rect.left));
+    const x=Math.min(dragStart.x,clampX);
+    const w=Math.abs(clampX-dragStart.x);
+    sel.style.left=x+'px';sel.style.width=w+'px';
+  };
+  const onWindowUp=e=>{finishDrag(e);};
   svgEl.addEventListener('mouseleave',e=>{ if(!dragStart) tooltip.style.display='none'; });
 }
 

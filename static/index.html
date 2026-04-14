@@ -343,6 +343,7 @@ function makeChart(wrap, cfg){
     svg+=`<circle class="__dot" r="5" fill="${s.color}" stroke="#fff" stroke-width="1.5" style="display:none"/>`;
   });
   svg+='</svg>';
+  const card=wrap.closest('.card')||wrap.parentElement;
   let tip=card.querySelector('.chart-tip');
   if(!tip){tip=document.createElement('div');tip.className='spec-tooltip chart-tip';card.appendChild(tip);}
   wrap.innerHTML=svg;

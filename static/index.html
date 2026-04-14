@@ -40,6 +40,12 @@ nav .ts{font-size:12px;color:var(--muted)}
 .chart-wrap svg .trap-group:hover .trap-label { opacity: 1; }
 .chart-wrap svg .trap-group:hover path { stroke-width: 3; }
 .chart-wrap svg .trap-group { cursor: pointer; }
+.spec-tooltip{position:absolute;z-index:20;pointer-events:none;background:rgba(8,12,24,.96);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:220px;max-width:380px;color:var(--text);font-size:12px;line-height:1.45;box-shadow:0 10px 30px rgba(0,0,0,.25);display:none}
+.spec-tooltip .ttl{font-weight:700;margin-bottom:6px;color:#fff}
+.spec-tooltip .itm{padding:2px 0;border-top:1px solid rgba(255,255,255,.06)}
+.spec-tooltip .itm:first-of-type{border-top:0}
+.spec-tooltip .hist{color:#c7cfe8}
+.spec-tooltip .cur{color:#fff}
 /* RESPONSIVE */
 @media(max-width:1100px){.c3,.c4{grid-column:span 6}.c8{grid-column:span 12}}
 @media(max-width:760px){.c3,.c4,.c6,.c8,.c12{grid-column:span 12}.val{font-size:22px}}
@@ -120,12 +126,13 @@ nav .ts{font-size:12px;color:var(--muted)}
       <div class="sm" style="margin-top:8px">梯形宽度 = 带宽(20/40/80/160MHz)　高度 = 信号强度(RSSI)　<span style="color:#21c77a">■</span> 当前网络　<span style="color:#68a0ff">■</span> 其他命名网络　<span style="color:#ff5d73">■</span> 匿名设备　<span style="color:rgba(255,255,255,.15)">■</span> 虚线梯形 = 历史对比</div>
     </div>
     <div class="card c12">
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;flex-wrap:wrap">
         <span class="sec" style="margin:0">历史对比</span>
-        <input type="range" id="ch-time-slider" min="0" max="0" value="0" style="flex:1;accent-color:var(--accent)">
+        <label class="sm" style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="ch-auto-refresh" checked style="accent-color:var(--ok)"> 实时刷新</label>
+        <input type="range" id="ch-time-slider" min="0" max="0" value="0" style="flex:1;accent-color:var(--accent);min-width:200px">
         <span class="sm" id="ch-time-label">无历史</span>
       </div>
-      <div class="sm">滑块最右 = 仅看当前频谱。向左拖动 = 选一个历史时间点，频谱图上叠加该时刻的<b>虚线梯形</b>作为对比（所有周围网络在该时刻的信道和信号强度）</div>
+      <div class="sm">勾选「实时刷新」时滑块自动跟随最新数据。取消勾选后可自由拖动滑块分析历史，不会被新数据打断。滑块最右 = 仅看当前频谱，向左拖 = 叠加该时刻的虚线梯形做对比。</div>
     </div>
     <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
     <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
@@ -331,15 +338,16 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   Object.entries(snapshot.channel_networks||{}).forEach(([ch,items])=>{
     items.forEach(net=>{
       const band=(net.band||'').replace('2GHz','2.4GHz');
-      if(band.includes(bandLabel)) nets.push({...net, channel:Number(ch)});
+      if(band.includes(bandLabel)) nets.push({...net, channel:Number(ch), _src:'current'});
     });
   });
   const compare=[];
+  const cmpTs=compareSnapshot?.timestamp||'';
   if(compareSnapshot){
     Object.entries(compareSnapshot.channel_networks||{}).forEach(([ch,items])=>{
       items.forEach(net=>{
         const band=(net.band||'').replace('2GHz','2.4GHz');
-        if(band.includes(bandLabel)) compare.push({...net, channel:Number(ch)});
+        if(band.includes(bandLabel)) compare.push({...net, channel:Number(ch), _src:'history', _ts:cmpTs});
       });
     });
   }
@@ -347,29 +355,61 @@ function makeSpectrumChart(wrap, snapshot, compareSnapshot, bandLabel){
   for(let r=-90;r<=-20;r+=10){const y=yFor(r);svg+=`<line x1="${marginL}" y1="${y}" x2="${W-marginR}" y2="${y}" stroke="rgba(255,255,255,.05)"/><text x="${marginL-8}" y="${y+4}" fill="var(--muted)" font-size="10" text-anchor="end">${r}</text>`;}
   channels.forEach(ch=>{const x=xFor(ch);svg+=`<line x1="${x}" y1="${marginT}" x2="${x}" y2="${marginT+plotH}" stroke="rgba(255,255,255,.04)"/><text x="${x}" y="${marginT+plotH+18}" fill="var(--muted)" font-size="10" text-anchor="middle">${ch}</text>`;});
   svg+=`<text x="6" y="${marginT-6}" fill="var(--muted)" font-size="10">RSSI(dBm)</text>`;
-  function drawNet(net, dashed){
+  const allNets=[...compare.map(n=>({...n,_dashed:true})),...nets.map(n=>({...n,_dashed:false}))];
+  allNets.forEach((net,idx)=>{
     const ch=net.channel;
     const rssi=net.rssi!=null?net.rssi:-75;
     const span=widthToSpan(net.width, net.band);
     const x0=xFor(ch-span/2), x1=xFor(ch), x2=xFor(ch+span/2);
     const yBase=yFor(-100), yPeak=yFor(rssi), yShoulder=yFor(Math.max(-95, rssi-10));
-    const color=dashed?'rgba(255,255,255,.18)':netColor(net,currentNames);
-    const dash=dashed?'6 5':'none';
-    const fill=dashed?'rgba(255,255,255,.03)':color+'22';
-    const label=net.anonymous?'匿名':(net.ssid||'hidden');
-    const tip=`${label}  ch${ch} ${net.width||''} RSSI=${rssi}`;
-    svg+=`<g class="trap-group">`;
-    svg+=`<path d="M ${x0.toFixed(1)} ${yBase.toFixed(1)} L ${((x0+x1)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x1.toFixed(1)} ${yPeak.toFixed(1)} L ${((x1+x2)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x2.toFixed(1)} ${yBase.toFixed(1)}" fill="${fill}" stroke="${color}" stroke-width="2" stroke-dasharray="${dash}"><title>${esc(tip)}</title></path>`;
-    if(!dashed){
+    const color=net._dashed?'rgba(255,255,255,.22)':netColor(net,currentNames);
+    const dash=net._dashed?'6 5':'none';
+    const fill=net._dashed?'rgba(255,255,255,.03)':color+'22';
+    svg+=`<g class="trap-group" data-idx="${idx}">`;
+    svg+=`<path d="M ${x0.toFixed(1)} ${yBase.toFixed(1)} L ${((x0+x1)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x1.toFixed(1)} ${yPeak.toFixed(1)} L ${((x1+x2)/2).toFixed(1)} ${yShoulder.toFixed(1)} L ${x2.toFixed(1)} ${yBase.toFixed(1)}" fill="${fill}" stroke="${color}" stroke-width="2" stroke-dasharray="${dash}"/>`;
+    if(!net._dashed){
+      const label=net.anonymous?'匿名':(net.ssid||'hidden');
       svg+=`<text class="trap-label" x="${x1.toFixed(1)}" y="${(yPeak-6).toFixed(1)}" fill="${color}" font-size="10" text-anchor="middle">${esc(label)}</text>`;
-      svg+=`<text class="trap-label" x="${x1.toFixed(1)}" y="${(yPeak-18).toFixed(1)}" fill="${color}" font-size="9" text-anchor="middle">${net.width||''} RSSI=${rssi}</text>`;
     }
     svg+=`</g>`;
-  }
-  compare.forEach(n=>drawNet(n,true));
-  nets.forEach(n=>drawNet(n,false));
+  });
   svg+='</svg>';
+  const tooltipId='tt-'+bandLabel.replace('.','');
+  let tooltip=wrap.querySelector('.spec-tooltip');
+  if(!tooltip){tooltip=document.createElement('div');tooltip.className='spec-tooltip';wrap.appendChild(tooltip);}
   wrap.innerHTML=svg;
+  wrap.appendChild(tooltip);
+  wrap.style.position='relative';
+  const svgEl=wrap.querySelector('svg');
+  svgEl.addEventListener('mousemove',e=>{
+    const rect=svgEl.getBoundingClientRect();
+    const mx=(e.clientX-rect.left)/rect.width*W;
+    const my2=(e.clientY-rect.top)/rect.height*H;
+    const hits=[];
+    allNets.forEach(net=>{
+      const ch=net.channel;
+      const rssi=net.rssi!=null?net.rssi:-75;
+      const span=widthToSpan(net.width, net.band);
+      const xl=xFor(ch-span/2), xr=xFor(ch+span/2), yp=yFor(rssi), yb=yFor(-100);
+      if(mx>=xl && mx<=xr && my2>=yp && my2<=yb) hits.push(net);
+    });
+    if(hits.length){
+      let html='<div class="ttl">ch'+hits[0].channel+' 上的信号 ('+hits.length+'个)</div>';
+      hits.forEach(n=>{
+        const name=n.anonymous?'(匿名RF)':(n.ssid||'(hidden)');
+        const rssi=n.rssi!=null?n.rssi:-75;
+        const src=n._dashed?`<span class="hist">历史 ${hm(n._ts)}</span>`:'<span class="cur">当前</span>';
+        html+=`<div class="itm">${src} <b>${esc(name)}</b> ${n.width||''} RSSI=${rssi} dBm</div>`;
+      });
+      tooltip.innerHTML=html;
+      tooltip.style.display='block';
+      const tx=Math.min(e.clientX-rect.left+12, rect.width-240);
+      const ty=Math.max(0, e.clientY-rect.top-60);
+      tooltip.style.left=tx+'px';
+      tooltip.style.top=ty+'px';
+    } else { tooltip.style.display='none'; }
+  });
+  svgEl.addEventListener('mouseleave',()=>{tooltip.style.display='none';});
 }
 
 /* ===== PAGE RENDERERS ===== */
@@ -427,27 +467,38 @@ function renderSignal(history){
 let fullSnapshots=[];
 let compareIndex=null;
 let userDragging=false;
+let autoRefresh=true;
+
+function getSelectedSnapshot(){
+  if(!fullSnapshots.length) return null;
+  const slider=document.getElementById('ch-time-slider');
+  const idx=Number(slider.value||fullSnapshots.length-1);
+  if(idx>=fullSnapshots.length-1) return fullSnapshots[fullSnapshots.length-1];
+  return fullSnapshots[idx];
+}
 
 function renderChannelsPage(cur, history){
-  const cn=cur.channel_networks||{};
-  const summaries=cur.rf_channel_summary||{};
-  const my=String(cur.channel??'');
   const slider=document.getElementById('ch-time-slider');
   const label=document.getElementById('ch-time-label');
   if(fullSnapshots.length>1){
     slider.max=fullSnapshots.length-1;
-    if(!userDragging) slider.value=fullSnapshots.length-1;
+    if(autoRefresh && !userDragging) slider.value=fullSnapshots.length-1;
     const idx=Number(slider.value);
     const isLatest=(idx>=fullSnapshots.length-1);
+    const selected=isLatest?cur:fullSnapshots[idx];
     const cmp=isLatest?null:fullSnapshots[idx];
-    label.textContent=isLatest?'仅当前（拖左查看历史对比）':(fullSnapshots[idx].timestamp||'历史');
+    label.textContent=isLatest?'仅当前（拖左查看历史对比）':`${fullSnapshots[idx].timestamp||'历史'}（冻结视图）`;
     makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
     makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+    cur=selected;
   } else {
     label.textContent='等待更多数据…';
     makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
     makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
   }
+  const cn=cur.channel_networks||{};
+  const summaries=cur.rf_channel_summary||{};
+  const my=String(cur.channel??'');
   makeBarChart(document.getElementById('ch-bar-wrap'),cn,my);
   // channel trend over time
   makeChart(document.getElementById('ch-trend-wrap'),{data:history,height:220,rightAxis:true,series:[
@@ -484,19 +535,52 @@ function renderEventsPage(events){
   </div>`).join(''):'<div class="sm" style="padding:16px">暂无事件记录</div>';
 }
 
-/* ===== SLIDER ===== */
+/* ===== SLIDER + AUTO-REFRESH ===== */
 const timeSlider=document.getElementById('ch-time-slider');
+const autoRefreshCb=document.getElementById('ch-auto-refresh');
+autoRefreshCb.addEventListener('change', function(){
+  autoRefresh=this.checked;
+  if(autoRefresh){
+    timeSlider.value=fullSnapshots.length-1;
+    refresh();
+  }
+});
+function triggerSliderUpdate(){
+  const idx=Number(timeSlider.value);
+  const isLatest=(idx>=fullSnapshots.length-1);
+  const cur=fullSnapshots.length?fullSnapshots[fullSnapshots.length-1]:{};
+  const selected=isLatest?cur:(fullSnapshots[idx]||cur);
+  const cmp=isLatest?null:fullSnapshots[idx];
+  document.getElementById('ch-time-label').textContent=isLatest?'仅当前（拖左查看历史对比）':`${(fullSnapshots[idx]?.timestamp)||'历史'}（冻结视图）`;
+  makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
+  makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
+  const sn=selected;
+  const cn2=sn.channel_networks||{};
+  const my2=String(sn.channel??'');
+  makeBarChart(document.getElementById('ch-bar-wrap'),cn2,my2);
+  const summaries2=sn.rf_channel_summary||{};
+  const keys2=Object.keys(cn2).sort((a,b)=>Number(a)-Number(b));
+  const el2=document.getElementById('ch-list');
+  el2.innerHTML=keys2.length?keys2.map(k=>{
+    const nets=cn2[k]||[];const s=summaries2[k]||summaries2[Number(k)]||{};
+    const named=nets.filter(n=>!n.anonymous);const anon=nets.filter(n=>n.anonymous);
+    const mine=k===my2;
+    const rssi=s.rssi_min!=null?`RSSI ${s.rssi_min}~${s.rssi_max} dBm`:'';
+    return `<div class="channel-box ${mine?'mine':''}">
+      <div><strong>信道 ${esc(k)}</strong>${mine?'<span class="badge" style="background:#21c77a33;color:#21c77a;border-color:#21c77a55">当前信道</span>':''}
+      <span class="badge">命名 ${named.length}</span><span class="badge">匿名 ${anon.length}</span>${rssi?`<span class="badge">${esc(rssi)}</span>`:''}</div>
+      <div style="margin-top:8px">${named.concat(anon).map(n=>{
+        const nm=n.anonymous?'<span style="color:var(--bad)">(anonymous RF)</span>':(esc(n.ssid)||'<span style="color:var(--warn)">(hidden SSID)</span>');
+        const meta=[n.band,n.width,n.phy_mode,n.rssi!=null?'RSSI='+n.rssi:''].filter(Boolean).join(' · ');
+        return `<div class="row"><span>${nm}</span><span class="sm">${esc(meta)}</span></div>`;
+      }).join('')}</div></div>`;
+  }).join(''):'<div class="sm" style="padding:16px">暂无信道数据</div>';
+}
 timeSlider.addEventListener('input', function(){
   userDragging=true;
-  const idx=Number(this.value);
-  const isLatest=(idx>=fullSnapshots.length-1);
-  const cmp=isLatest?null:fullSnapshots[idx];
-  document.getElementById('ch-time-label').textContent=isLatest?'仅当前（拖左查看历史对比）':(fullSnapshots[idx]?.timestamp||'历史');
-  if(fullSnapshots.length){
-    const cur=fullSnapshots[fullSnapshots.length-1];
-    makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,cmp,'2.4GHz');
-    makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,cmp,'5GHz');
-  }
+  autoRefresh=false;
+  autoRefreshCb.checked=false;
+  triggerSliderUpdate();
 });
 timeSlider.addEventListener('change', function(){ userDragging=false; });
 
@@ -505,7 +589,7 @@ async function refresh(){
   try{
     const [cur,history,events,snapshots]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events'),api('/api/snapshots')]);
     fullSnapshots=snapshots;
-    if(compareIndex!=null && compareIndex>=fullSnapshots.length) compareIndex=Math.max(0,fullSnapshots.length-1);
+    if(!autoRefresh) return;
     renderDashboard(cur,history,events);
     renderSignal(history);
     renderChannelsPage(cur, history);

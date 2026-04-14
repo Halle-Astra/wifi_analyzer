@@ -11,8 +11,11 @@
 | `wifi_monitor.py` | 监控守护进程 — 按固定间隔采集 WiFi 数据并写入日志 |
 | `wifi_web.py` | Web UI 仪表盘 — 浏览器实时查看监控数据 |
 | `wifi_analyzer.py` | 分析工具 — 对历史日志进行统计、回溯和可视化 |
-| `wifi_scanner.swift` | Swift RF 扫描器源码 — 检测匿名/隐藏设备及其信号强度 |
-| `wifi_scanner` | 编译后的扫描器二进制（需手动编译，见下方说明） |
+| `wifi_scanner.swift` | Swift CLI 扫描器源码 — 检测匿名/隐藏设备及其信号强度 |
+| `wifi_scanner` | 编译后的 CLI 扫描器二进制 |
+| `native_wifi_scanner_app.swift` | 原生 macOS 扫描 App 源码（支持定位权限） |
+| `build_scanner_app.sh` | 构建 `WiFiScanner.app` 的脚本 |
+| `Info.plist` | 原生扫描 App 的 bundle 配置和定位权限说明 |
 
 ## 采集指标
 
@@ -43,6 +46,28 @@
 | `SIGNAL_ANOMALY` | 信号异常强 (> -30 dBm) |
 
 ## 快速开始
+
+### 编译原生扫描 App（更推荐）
+
+如果你希望尽量拿到 SSID / BSSID，从而让频谱图里的命名网络功率匹配更准确，建议改用原生 App 版本。这样 macOS 才能正常给定位权限：
+
+```bash
+bash build_scanner_app.sh
+open WiFiScanner.app
+```
+
+首次打开后，到：
+- `系统设置 -> 隐私与安全性 -> 定位服务`
+
+确认 `WiFi Scanner` 已被允许。
+
+原生 App 会持续把扫描结果写到：
+
+```bash
+~/.wifi-monitor/native_scan.json
+```
+
+`wifi_web.py` 和 `wifi_monitor.py` 会自动优先读取这个文件。
 
 ### 编译 RF 扫描器（推荐）
 

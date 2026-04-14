@@ -122,10 +122,31 @@ def count_neighbors(iface):
 
 
 SCANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_scanner")
+NATIVE_SCAN_PATH = os.path.expanduser("~/.wifi-monitor/native_scan.json")
+
+
+def rf_scan_from_native_app():
+    """Read scan output from the native app if available and fresh."""
+    if not os.path.isfile(NATIVE_SCAN_PATH):
+        return None
+    try:
+        st = os.stat(NATIVE_SCAN_PATH)
+        if time.time() - st.st_mtime > 20:
+            return None
+        with open(NATIVE_SCAN_PATH) as fh:
+            data = json.load(fh)
+        if data.get("authorized") and "networks" in data:
+            return data
+    except Exception:
+        pass
+    return None
 
 
 def rf_scan():
-    """Run Swift WiFi scanner for per-device RSSI and hidden network detection."""
+    """Prefer native app output; otherwise run Swift CLI scanner."""
+    native_data = rf_scan_from_native_app()
+    if native_data:
+        return native_data
     if not os.path.isfile(SCANNER_PATH):
         return None
     try:
@@ -144,13 +165,18 @@ BAND_NAMES = {0: "unknown", 1: "2.4GHz", 2: "5GHz"}
 
 
 def merge_rf_data(channel_networks, rf_data):
-    """Merge Swift RF scan data into channel_networks.
+    """Merge RF scan data into channel_networks.
 
-    - Adds RSSI to named networks where we can match by channel
-    - Appends anonymous entries for devices only seen in RF scan
+    When the native app provides SSIDs (authorized=True), we match by
+    SSID+channel for accurate RSSI assignment. Otherwise fall back to
+    count-based anonymous estimation.
     """
     if not rf_data or "networks" not in rf_data:
         return channel_networks, {}
+
+    has_ssids = rf_data.get("authorized", False) and any(
+        n.get("ssid") for n in rf_data["networks"]
+    )
 
     rf_by_channel = {}
     for net in rf_data["networks"]:
@@ -165,16 +191,26 @@ def merge_rf_data(channel_networks, rf_data):
         named = channel_networks.get(ch, [])
         rf_list = rf_by_channel.get(ch, [])
 
-        named_count = len(named)
-        rf_count = len(rf_list)
-        anonymous_count = max(0, rf_count - named_count)
-
         rssi_values = [n["rssi"] for n in rf_list]
         noise_values = [n["noise"] for n in rf_list if n.get("noise", 0) != 0]
 
+        if has_ssids:
+            matched_rf = set()
+            for n in named:
+                for i, rf in enumerate(rf_list):
+                    if i not in matched_rf and rf.get("ssid") and rf["ssid"] == n.get("ssid", ""):
+                        n["rssi"] = rf["rssi"]
+                        n["bssid"] = rf.get("bssid", "")
+                        matched_rf.add(i)
+                        break
+            unmatched = [rf_list[i] for i in range(len(rf_list)) if i not in matched_rf]
+        else:
+            unmatched = rf_list[len(named):] if len(rf_list) > len(named) else []
+
+        anonymous_count = len(unmatched)
         rf_channel_summary[ch] = {
-            "named_count": named_count,
-            "rf_total_count": rf_count,
+            "named_count": len(named),
+            "rf_total_count": len(rf_list),
             "anonymous_count": anonymous_count,
             "rssi_values": rssi_values,
             "rssi_min": min(rssi_values) if rssi_values else None,
@@ -183,24 +219,22 @@ def merge_rf_data(channel_networks, rf_data):
             "noise_values": noise_values,
         }
 
-        if anonymous_count > 0:
-            matched_rssi = sorted(rssi_values, reverse=True)[:named_count]
-            unmatched_rssi = sorted(rssi_values, reverse=True)[named_count:]
-            for idx, rssi in enumerate(unmatched_rssi):
-                bw_raw = rf_list[named_count + idx]["channelWidth"] if (named_count + idx) < len(rf_list) else 0
-                band_raw = rf_list[named_count + idx]["channelBand"] if (named_count + idx) < len(rf_list) else 0
-                if ch not in channel_networks:
-                    channel_networks[ch] = []
-                channel_networks[ch].append({
-                    "ssid": "",
-                    "channel_raw": "",
-                    "band": BAND_NAMES.get(band_raw, ""),
-                    "width": BW_NAMES.get(bw_raw, ""),
-                    "phy_mode": "",
-                    "security": "",
-                    "rssi": rssi,
-                    "anonymous": True,
-                })
+        for rf in unmatched:
+            bw_raw = rf.get("channelWidth", 0)
+            band_raw = rf.get("channelBand", 0)
+            if ch not in channel_networks:
+                channel_networks[ch] = []
+            channel_networks[ch].append({
+                "ssid": rf.get("ssid", ""),
+                "bssid": rf.get("bssid", ""),
+                "channel_raw": "",
+                "band": BAND_NAMES.get(band_raw, ""),
+                "width": BW_NAMES.get(bw_raw, ""),
+                "phy_mode": "",
+                "security": "",
+                "rssi": rf["rssi"],
+                "anonymous": not bool(rf.get("ssid")),
+            })
 
     return channel_networks, rf_channel_summary
 

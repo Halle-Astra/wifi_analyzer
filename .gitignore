@@ -1,3 +1,5 @@
 __pycache__/
 logs/
 *.pyc
+WiFiScanner.app/
+wifi_scanner

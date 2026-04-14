@@ -157,7 +157,7 @@ nav .ts{font-size:12px;color:var(--muted)}
         <input type="range" id="ch-time-slider" min="0" max="0" value="0" style="flex:1;accent-color:var(--accent);min-width:200px">
         <span class="sm" id="ch-time-label">无历史</span>
       </div>
-      <div class="sm">勾选「实时刷新」时滑块自动跟随最新数据。取消勾选后可自由拖动滑块分析历史，不会被新数据打断。滑块最右 = 当前频谱，向左拖 = 直接查看该时刻的历史频谱与信道数据。</div>
+      <div class="sm">勾选「实时刷新」时滑块自动跟随最新数据。取消勾选后可自由拖动滑块分析历史，不会被新数据打断。滑块最右 = 当前频谱，向左拖 = 直接查看该时刻的历史频谱与信道数据。图表默认显示滑块位置附近 15 分钟窗口。可用 ← → 方向键精细控制。</div>
     </div>
     <div class="card c12"><div class="sec">信道设备分布（柱状图）</div><div class="chart-wrap" id="ch-bar-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：当前信道的命名设备　<span style="color:#68a0ff">■</span> 蓝色：其他信道的命名设备　<span style="color:#ff5d73">■</span> 红色：匿名 RF 设备</div></div>
     <div class="card c12"><div class="sec">信道竞争趋势（随时间变化）</div><div class="chart-wrap" id="ch-trend-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#68a0ff">■</span> 命名邻居总数　<span style="color:#ff5d73">■</span> 匿名设备数　<span style="color:#21c77a">■</span> 同信道竞争数</div></div>
@@ -643,6 +643,8 @@ function renderSignal(history){
 }
 
 let fullSnapshots=[];
+let timelineMeta=[];
+let currentView=null;
 let compareIndex=null;
 let userDragging=false;
 let autoRefresh=true;
@@ -653,35 +655,17 @@ const spectrumZoom={
 };
 
 function getSelectedSnapshot(){
-  if(!fullSnapshots.length) return null;
-  const slider=document.getElementById('ch-time-slider');
-  const idx=Number(slider.value||fullSnapshots.length-1);
-  if(idx>=fullSnapshots.length-1) return fullSnapshots[fullSnapshots.length-1];
-  return fullSnapshots[idx];
+  if(currentView && currentView.current) return currentView.current;
+  return {};
 }
 
 function renderChannelsPage(cur, history){
   const slider=document.getElementById('ch-time-slider');
   const label=document.getElementById('ch-time-label');
-  if(fullSnapshots.length>1){
-    slider.max=fullSnapshots.length-1;
-    if(autoRefresh && !userDragging) slider.value=fullSnapshots.length-1;
-    const idx=Number(slider.value);
-    const isLatest=(idx>=fullSnapshots.length-1);
-    const selected=isLatest?cur:fullSnapshots[idx];
-    label.textContent=isLatest?'实时':'历史快照：'+(fullSnapshots[idx].timestamp||'');
-    if(!specDragging){
-      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),selected,null,'2.4GHz');
-      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),selected,null,'5GHz');
-    }
-    cur=selected;
-  } else {
-    label.textContent='等待更多数据…';
-    if(!specDragging){
-      makeSpectrumChart(document.getElementById('ch-spec24-wrap'),cur,null,'2.4GHz');
-      makeSpectrumChart(document.getElementById('ch-spec5-wrap'),cur,null,'5GHz');
-    }
-  }
+  const idx=Number(slider.value||0);
+  const latestIndex=Math.max(0, timelineMeta.length-1);
+  const isLatest=(idx>=latestIndex);
+  label.textContent=isLatest?'实时':('历史快照：'+((timelineMeta[idx]?.t)||''));
   const cn=cur.channel_networks||{};
   const summaries=cur.rf_channel_summary||{};
   const my=String(cur.channel??'');
@@ -735,39 +719,21 @@ document.getElementById('ch-reset-24').addEventListener('click',()=>{spectrumZoo
 document.getElementById('ch-reset-5').addEventListener('click',()=>{spectrumZoom['5GHz']=null;triggerSliderUpdate();});
 function triggerSliderUpdate(){
   const idx=Number(timeSlider.value);
-  const isLatest=(idx>=fullSnapshots.length-1);
-  const cur=fullSnapshots.length?fullSnapshots[fullSnapshots.length-1]:{};
-  const selected=isLatest?cur:(fullSnapshots[idx]||cur);
-  document.getElementById('ch-time-label').textContent=isLatest?'实时':'历史快照：'+((fullSnapshots[idx]?.timestamp)||'');
-  makeSpectrumChart(document.getElementById('ch-spec24-wrap'),selected,null,'2.4GHz');
-  makeSpectrumChart(document.getElementById('ch-spec5-wrap'),selected,null,'5GHz');
-  const sn=selected;
-  const cn2=sn.channel_networks||{};
-  const my2=String(sn.channel??'');
-  makeBarChart(document.getElementById('ch-bar-wrap'),cn2,my2);
-  const summaries2=sn.rf_channel_summary||{};
-  const keys2=Object.keys(cn2).sort((a,b)=>Number(a)-Number(b));
-  const el2=document.getElementById('ch-list');
-  el2.innerHTML=keys2.length?keys2.map(k=>{
-    const nets=cn2[k]||[];const s=summaries2[k]||summaries2[Number(k)]||{};
-    const named=nets.filter(n=>!n.anonymous);const anon=nets.filter(n=>n.anonymous);
-    const mine=k===my2;
-    const rssi=s.rssi_min!=null?`RSSI ${s.rssi_min}~${s.rssi_max} dBm`:'';
-    return `<div class="channel-box ${mine?'mine':''}">
-      <div><strong>信道 ${esc(k)}</strong>${mine?'<span class="badge" style="background:#21c77a33;color:#21c77a;border-color:#21c77a55">当前信道</span>':''}
-      <span class="badge">命名 ${named.length}</span><span class="badge">匿名 ${anon.length}</span>${rssi?`<span class="badge">${esc(rssi)}</span>`:''}</div>
-      <div style="margin-top:8px">${named.concat(anon).map(n=>{
-        const nm=n.anonymous?'<span style="color:var(--bad)">(anonymous RF)</span>':(esc(n.ssid)||'<span style="color:var(--warn)">(hidden SSID)</span>');
-        const meta=[n.band,n.width,n.phy_mode,n.rssi!=null?'RSSI='+n.rssi:''].filter(Boolean).join(' · ');
-        return `<div class="row"><span>${nm}</span><span class="sm">${esc(meta)}</span></div>`;
-      }).join('')}</div></div>`;
-  }).join(''):'<div class="sm" style="padding:16px">暂无信道数据</div>';
+  const latestIndex=Math.max(0, timelineMeta.length-1);
+  const isLatest=(idx>=latestIndex);
+  document.getElementById('ch-time-label').textContent=isLatest?'实时':'历史快照：'+((timelineMeta[idx]?.t)||'');
+  fetchView(idx);
 }
 timeSlider.addEventListener('input', function(){
   userDragging=true;
   autoRefresh=false;
   autoRefreshCb.checked=false;
   triggerSliderUpdate();
+});
+timeSlider.addEventListener('keydown', function(e){
+  const cur = Number(this.value || 0);
+  if(e.key === 'ArrowLeft'){ e.preventDefault(); this.value = Math.max(0, cur - 1); this.dispatchEvent(new Event('input')); }
+  if(e.key === 'ArrowRight'){ e.preventDefault(); this.value = Math.min(Number(this.max || 0), cur + 1); this.dispatchEvent(new Event('input')); }
 });
 timeSlider.addEventListener('change', function(){ userDragging=false; });
 
@@ -787,16 +753,32 @@ document.getElementById('log-load-btn').addEventListener('click', async function
 });
 refreshLogDates();
 
+/* ===== FETCH VIEW ===== */
+async function fetchView(center){
+  try{
+    const v = await api('/api/view?center='+center+'&window=90');
+    currentView = v;
+    fullSnapshots = v.snapshots;
+    renderDashboard(v.current, v.history, v.events);
+    renderSignal(v.history);
+    renderChannelsPage(v.current, v.history);
+    renderEventsPage(v.events);
+  }catch(e){console.error(e);}
+}
+
 /* ===== REFRESH LOOP ===== */
 async function refresh(){
   try{
-    const [cur,history,events,snapshots]=await Promise.all([api('/api/current'),api('/api/history'),api('/api/events'),api('/api/snapshots')]);
-    fullSnapshots=snapshots;
+    const [cur, tl] = await Promise.all([api('/api/current'), api('/api/timeline')]);
+    timelineMeta = tl;
+    const slider = document.getElementById('ch-time-slider');
+    slider.max = Math.max(0, tl.length - 1);
+    if(autoRefresh && !userDragging){
+      slider.value = tl.length - 1;
+    }
     if(!autoRefresh) return;
-    renderDashboard(cur,history,events);
-    renderSignal(history);
-    renderChannelsPage(cur, history);
-    renderEventsPage(events);
+    const center = Number(slider.value);
+    await fetchView(center);
   }catch(e){console.error(e);}
 }
 refresh();

@@ -289,6 +289,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = list_log_dates(state.log_dir)
             self._json_response(data)
 
+        elif path == "/api/timeline":
+            with state.lock:
+                data = [{"i": i, "t": s.get("timestamp", "")}
+                        for i, s in enumerate(state.full_history)]
+            self._json_response(data)
+
+        elif path == "/api/view":
+            qs = parse_qs(parsed.query)
+            center = int(qs.get("center", ["-1"])[0])
+            window = int(qs.get("window", ["90"])[0])
+            with state.lock:
+                total = len(state.full_history)
+                if center < 0 or center >= total:
+                    center = max(0, total - 1)
+                lo = max(0, center - window)
+                hi = min(total, center + window + 1)
+                snaps = list(state.full_history)[lo:hi]
+                hist = list(state.history)[lo:hi]
+                evts = [e for e in state.events
+                        if lo < total and snaps
+                        and snaps[0].get("timestamp", "z") <= e.get("timestamp", "") <= snaps[-1].get("timestamp", "")]
+                cur_snap = list(state.full_history)[center] if center < total else {}
+            self._json_response({
+                "center": center,
+                "lo": lo,
+                "hi": hi - 1,
+                "total": total,
+                "current": cur_snap,
+                "history": hist,
+                "snapshots": snaps,
+                "events": evts,
+            })
+
         elif path == "/" or path == "/index.html":
             self._file_response(
                 os.path.join(STATIC_DIR, "index.html"),

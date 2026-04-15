@@ -65,6 +65,7 @@ nav .ts{font-size:12px;color:var(--muted)}
   <span class="logo">📡 WiFi Monitor</span>
   <a href="#dashboard" class="active" data-page="dashboard">概览</a>
   <a href="#signal" data-page="signal">信号</a>
+  <a href="#aplatency" data-page="aplatency">AP延迟</a>
   <a href="#channels" data-page="channels">信道</a>
   <a href="#interference" data-page="interference">干扰</a>
   <a href="#events" data-page="events">事件</a>
@@ -127,6 +128,14 @@ nav .ts{font-size:12px;color:var(--muted)}
     <div class="card c12"><div class="sec">AP vs 公网 Ping 对比 (ms)</div><div class="chart-wrap" id="s-apcmp-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> 绿色：AP / 192.168.1.10　本地无线链路　<span style="color:#ffb020">■</span> 黄色：公网 / 223.5.5.5　完整外网链路</div></div>
     <div class="card c12"><div class="sec">公网 Ping 延迟 (ms)</div><div class="chart-wrap" id="s-ping-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#ffb020">■</span> Ping 延迟：到 223.5.5.5 的往返时间</div></div>
     <div class="card c12"><div class="sec">TX 速率 (Mbps)</div><div class="chart-wrap" id="s-tx-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#a78bfa">■</span> TX 速率：当前连接的传输速率</div></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: AP LATENCY ===== -->
+<div class="page" id="p-aplatency">
+  <div class="grid">
+    <div class="card c12"><div class="sec">AP 延迟趋势（重点关注 >50ms）</div><div class="chart-wrap" id="a-ap-wrap"></div><div class="sm" style="margin-top:8px"><span style="color:#21c77a">■</span> AP Ping 延迟　<span style="color:#ff5d73">■</span> 50ms 阈值（语音通话容易受影响）</div></div>
+    <div class="card c12"><div class="sec">AP 延迟超标事件</div><div class="list" id="a-list" style="max-height:500px"></div></div>
   </div>
 </div>
 
@@ -737,6 +746,25 @@ function renderDashboard(cur, history, events){
   }).join(''):'<div class="sm" style="padding:12px">无蓝牙设备</div>';
 }
 
+function renderApLatency(history, allEvents){
+  const THRESHOLD = 50;
+  const histWithThresh = history.map(h=>({...h, _thresh: THRESHOLD}));
+  makeChart(document.getElementById('a-ap-wrap'),{data:histWithThresh,height:280,series:[
+    {key:'ap_ping_latency_ms',color:'#21c77a',unit:'ms',min:0,width:2.5,decimals:1},
+    {key:'_thresh',color:'#ff5d73',unit:'ms',min:0,width:1.5,decimals:0},
+  ]});
+  const el=document.getElementById('a-list');
+  const apSpikes = allEvents.filter(e=>e.type==='AP_LATENCY_HIGH');
+  if(apSpikes.length){
+    el.innerHTML=apSpikes.slice().reverse().map(e=>`<div class="row">
+      <span class="mono" style="min-width:140px">${esc(e.timestamp)}</span>
+      <strong class="bad">${esc(e.detail)}</strong>
+    </div>`).join('');
+  } else {
+    el.innerHTML='<div class="sm" style="padding:16px;color:var(--ok)">✓ 48 小时内未检测到 AP 延迟超过 50ms</div>';
+  }
+}
+
 function renderSignal(history){
   makeChart(document.getElementById('s-rssi-wrap'),{data:history,height:250,series:[
     {key:'signal_dbm',color:'#21c77a',unit:'dBm',width:2.5,decimals:0},
@@ -1066,13 +1094,17 @@ refreshLogDates();
 /* ===== FETCH VIEW ===== */
 async function fetchView(center){
   try{
-    const v = await api('/api/view?center='+center+'&window=90');
+    const [v, allEvents] = await Promise.all([
+      api('/api/view?center='+center+'&window=90'),
+      api('/api/events'),
+    ]);
     currentView = v;
     fullSnapshots = v.snapshots;
-    renderDashboard(v.current, v.history, v.events);
+    renderDashboard(v.current, v.history, allEvents);
+    renderApLatency(v.history, allEvents);
     renderSignal(v.history);
     renderChannelsPage(v.current, v.history);
-    renderEventsPage(v.events);
+    renderEventsPage(allEvents);
   }catch(e){console.error(e);}
 }
 

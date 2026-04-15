@@ -501,6 +501,13 @@ def detect_events(prev, curr):
             "detail": f"Noise {prev_noise} -> {curr_noise} dBm, signal stable -> possible non-WiFi interference",
         })
 
+    ap_latency = curr.get("ap_ping_latency_ms")
+    if ap_latency is not None and ap_latency > 50:
+        events.append({
+            "type": "AP_LATENCY_HIGH",
+            "detail": f"AP ping {ap_latency:.1f}ms > 50ms threshold",
+        })
+
     return events
 
 

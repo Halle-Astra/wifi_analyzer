@@ -224,8 +224,9 @@ def sampler_loop(interval, log_dir):
                 state.history = state.history[-max_items:]
             if len(state.line_index) > max_items:
                 state.line_index = state.line_index[-max_items:]
-            if len(state.events) > max_items:
-                state.events = state.events[-max_items:]
+            import datetime as _dt
+            cutoff_ts = (_dt.datetime.now() - _dt.timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+            state.events = [e for e in state.events if e.get("timestamp", "") >= cutoff_ts]
 
         for _ in range(interval * 10):
             if not state.running:

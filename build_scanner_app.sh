@@ -67,29 +67,27 @@ elif [ "$OS" = "Linux" ]; then
 
     echo ""
     echo "=================================================="
-    echo "  WiFi 扫描需要 root 权限才能发现附近所有网络。"
-    echo "  推荐配置免密 sudo（二选一）："
+    echo "  WiFi 扫描和蓝牙发现需要 root 权限。"
+    echo "  推荐配置免密 sudo："
     echo "=================================================="
     echo ""
-    echo "方式一：sudoers 免密（推荐）"
     IWLIST_PATH="$(command -v iwlist 2>/dev/null || echo '/usr/sbin/iwlist')"
-    echo "  sudo bash -c 'echo \"$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH\" > /etc/sudoers.d/wifi-scan'"
+    BTCTL_PATH="$(command -v bluetoothctl 2>/dev/null || echo '/usr/bin/bluetoothctl')"
+    echo "手动配置（sudoers 免密）："
+    echo "  sudo bash -c 'echo \"$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH\" > /etc/sudoers.d/wifi-scan'"
     echo ""
-    echo "方式二：给 iwlist 添加 cap_net_admin capability"
-    echo "  sudo setcap cap_net_admin+ep $IWLIST_PATH"
+    echo "  - iwlist：发现附近所有 WiFi 网络（含 2.4G/5G 频谱图）"
+    echo "  - bluetoothctl：发现附近 BLE 低功耗蓝牙设备"
     echo ""
-    echo "配置后即可免密扫描，频谱图将显示所有 2.4G/5G 网络。"
-    echo ""
-    echo "如不配置，程序仍可运行，但频谱图只显示当前连接的 WiFi。"
+    echo "如不配置，程序仍可运行，但频谱图只显示已连接 WiFi，蓝牙列表为空。"
     echo ""
 
     read -rp "是否现在自动配置 sudoers 免密？[y/N] " REPLY
     if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-        IWLIST_PATH="$(command -v iwlist 2>/dev/null || echo '/usr/sbin/iwlist')"
-        SUDOERS_LINE="$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH"
+        SUDOERS_LINE="$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH"
         sudo bash -c "echo '$SUDOERS_LINE' > /etc/sudoers.d/wifi-scan && chmod 440 /etc/sudoers.d/wifi-scan"
         if [ $? -eq 0 ]; then
-            echo "Done! 已配置免密 sudo iwlist scan。"
+            echo "Done! 已配置免密 sudo iwlist + bluetoothctl。"
         else
             echo "配置失败，请手动执行上述命令。"
         fi

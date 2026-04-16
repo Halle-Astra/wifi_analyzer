@@ -261,6 +261,25 @@ def _linux_get_survey_info():
         return ""
 
 
+def _decode_iwlist_essid(raw):
+    """Decode iwlist ESSID string containing \\xNN escape sequences.
+
+    iwlist outputs non-ASCII bytes as \\xNN. For example, the Chinese SSID
+    '汤圆' appears as '\\xE6\\xB1\\xA4\\xE5\\x9C\\x86'. This function
+    converts consecutive \\xNN sequences back to proper UTF-8 text.
+    """
+    parts = re.split(r'((?:\\x[0-9a-fA-F]{2})+)', raw)
+    result = []
+    for part in parts:
+        if part.startswith("\\x"):
+            hex_bytes = re.findall(r'\\x([0-9a-fA-F]{2})', part)
+            decoded = bytes(int(h, 16) for h in hex_bytes).decode('utf-8', errors='replace')
+            result.append(decoded)
+        else:
+            result.append(part)
+    return "".join(result)
+
+
 def _parse_iwlist_output(output):
     """Parse iwlist scan output into a list of network dicts."""
     networks = []
@@ -292,7 +311,8 @@ def _parse_iwlist_output(output):
         if line.startswith("ESSID:"):
             essid_match = re.search(r'ESSID:"(.*)"', line)
             if essid_match:
-                current["ssid"] = essid_match.group(1)
+                raw_ssid = essid_match.group(1)
+                current["ssid"] = _decode_iwlist_essid(raw_ssid)
 
         elif line.startswith("Channel:"):
             ch_match = re.search(r"Channel:\s*(\d+)", line)
@@ -398,40 +418,125 @@ def _linux_scan_neighbors():
     return _linux_iwlist_scan()
 
 
-def _linux_scan_bluetooth():
-    """Scan Bluetooth devices on Linux via bluetoothctl."""
-    devices = []
+_bt_sudo_tested = None
+
+
+def _bt_needs_sudo():
+    """Check if sudo is available for bluetoothctl (passwordless)."""
+    global _bt_sudo_tested
+    if _bt_sudo_tested is not None:
+        return _bt_sudo_tested
+
     try:
         result = subprocess.run(
-            ["bluetoothctl", "devices"],
-            capture_output=True, text=True, timeout=5,
+            ["sudo", "-n", "bluetoothctl", "show"],
+            capture_output=True, text=True, timeout=3,
         )
-        for line in result.stdout.strip().splitlines():
-            match = re.match(r"Device\s+(\S+)\s+(.*)", line)
-            if match:
-                addr = match.group(1)
-                name = match.group(2)
-                connected = False
-                try:
-                    info = subprocess.run(
-                        ["bluetoothctl", "info", addr],
-                        capture_output=True, text=True, timeout=3,
-                    )
-                    if "Connected: yes" in info.stdout:
-                        connected = True
-                    type_match = re.search(r"Icon:\s*(\S+)", info.stdout)
-                    dev_type = type_match.group(1) if type_match else ""
-                except Exception:
-                    dev_type = ""
-                devices.append({
-                    "name": name,
-                    "connected": connected,
-                    "address": addr,
-                    "type": dev_type,
-                    "rssi": "",
-                })
+        if result.returncode == 0:
+            _bt_sudo_tested = True
+            return True
     except Exception:
         pass
+
+    _bt_sudo_tested = False
+    return False
+
+
+def _linux_scan_bluetooth():
+    """Scan Bluetooth devices on Linux via bluetoothctl.
+
+    Uses `bluetoothctl --timeout <N> scan on` to discover nearby BLE devices.
+    Parses the stream output for device addresses, names, RSSI, and
+    manufacturer data. Needs sudo for actual BLE discovery on most systems.
+    """
+    devices_info = {}
+    scan_duration = 4
+
+    use_sudo = _bt_needs_sudo()
+    cmd_prefix = ["sudo"] if use_sudo else []
+
+    try:
+        result = subprocess.run(
+            cmd_prefix + ["timeout", str(scan_duration + 2),
+                          "bluetoothctl", "--timeout", str(scan_duration),
+                          "scan", "on"],
+            capture_output=True, text=True, timeout=scan_duration + 5,
+        )
+        scan_output = (result.stdout or "") + (result.stderr or "")
+    except Exception:
+        scan_output = ""
+
+    ansi_re = re.compile(r'\x01?\x1b\[[^m]*m\x02?')
+    for line in scan_output.splitlines():
+        clean = ansi_re.sub('', line).strip()
+
+        new_match = re.match(
+            r'\[NEW\]\s+Device\s+(\S+)\s+(.*)', clean)
+        if new_match:
+            addr = new_match.group(1)
+            name = new_match.group(2).strip()
+            if addr not in devices_info:
+                devices_info[addr] = {"name": name, "rssi": None, "mfr": None}
+            continue
+
+        rssi_match = re.match(
+            r'\[CHG\]\s+Device\s+(\S+)\s+RSSI:\s*(-?\d+)', clean)
+        if rssi_match:
+            addr = rssi_match.group(1)
+            rssi_val = int(rssi_match.group(2))
+            if addr not in devices_info:
+                devices_info[addr] = {"name": "", "rssi": rssi_val, "mfr": None}
+            else:
+                devices_info[addr]["rssi"] = rssi_val
+            continue
+
+        mfr_match = re.match(
+            r'\[CHG\]\s+Device\s+(\S+)\s+ManufacturerData Key:\s*(0x[0-9a-fA-F]+)',
+            clean)
+        if mfr_match:
+            addr = mfr_match.group(1)
+            mfr_key = mfr_match.group(2).lower()
+            if addr in devices_info:
+                devices_info[addr]["mfr"] = mfr_key
+
+        name_match = re.match(
+            r'\[CHG\]\s+Device\s+(\S+)\s+Name:\s*(.*)', clean)
+        if name_match:
+            addr = name_match.group(1)
+            name = name_match.group(2).strip()
+            if addr in devices_info and name:
+                devices_info[addr]["name"] = name
+
+    devices = []
+    for addr, info in devices_info.items():
+        name = info["name"]
+        is_anon = (not name) or (name == addr.replace(":", "-"))
+
+        mfr = info.get("mfr") or ""
+        dev_type = ""
+        if mfr == "0x004c":
+            dev_type = "apple-device"
+        elif mfr == "0x0006":
+            dev_type = "microsoft-device"
+        elif mfr == "0x00e0":
+            dev_type = "google-device"
+
+        if is_anon:
+            display_name = f"(BLE) {addr}"
+            if dev_type:
+                display_name = f"({dev_type}) {addr}"
+        else:
+            display_name = name
+
+        devices.append({
+            "name": display_name,
+            "connected": False,
+            "address": addr,
+            "type": dev_type,
+            "rssi": info["rssi"] if info["rssi"] is not None else "",
+        })
+
+    devices.sort(key=lambda d: d.get("rssi") or -999, reverse=True)
     return devices
 
 

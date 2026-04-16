@@ -19,11 +19,17 @@ import csv
 import datetime
 import json
 import os
+import platform
 import re
 import subprocess
 import signal
 import sys
 import time
+
+from wifi_platform import (
+    PLATFORM, collect_wifi_info, scan_bluetooth as platform_scan_bluetooth,
+    ping_command_args, supports_rf_scan, supports_native_app,
+)
 
 DEFAULT_INTERVAL = 10  # seconds
 DEFAULT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -53,7 +59,9 @@ def today():
 # ---------------------------------------------------------------------------
 
 def get_wifi_data():
-    """Collect WiFi info via system_profiler JSON output."""
+    """Collect WiFi info via system_profiler JSON output (macOS only)."""
+    if PLATFORM != "Darwin":
+        return {"_error": "macOS-only function called on " + PLATFORM}
     try:
         result = subprocess.run(
             ["system_profiler", "SPAirPortDataType", "-json"],
@@ -86,7 +94,7 @@ def ping_test(target=PING_TARGET, timeout=PING_TIMEOUT):
     """Return (reachable: bool, latency_ms: float|None)."""
     try:
         result = subprocess.run(
-            ["ping", "-c", "1", "-W", str(timeout * 1000), target],
+            ping_command_args(target, timeout),
             capture_output=True, text=True, timeout=timeout + 2,
         )
         if result.returncode == 0:
@@ -273,34 +281,8 @@ def merge_rf_data(channel_networks, rf_data):
 
 
 def scan_bluetooth():
-    """Scan nearby Bluetooth devices via system_profiler."""
-    try:
-        result = subprocess.run(
-            ["system_profiler", "SPBluetoothDataType", "-json"],
-            capture_output=True, text=True, timeout=10,
-        )
-        data = json.loads(result.stdout)
-        bt = data.get("SPBluetoothDataType", [{}])[0]
-
-        devices = []
-        for category_key in ["device_connected", "device_not_connected"]:
-            category = bt.get(category_key, [])
-            if isinstance(category, list):
-                for item in category:
-                    if isinstance(item, dict):
-                        for name, info in item.items():
-                            dev = {
-                                "name": name,
-                                "connected": category_key == "device_connected",
-                                "address": info.get("device_address", ""),
-                                "type": info.get("device_minorType", ""),
-                                "rssi": info.get("device_rssi", ""),
-                            }
-                            devices.append(dev)
-
-        return devices
-    except Exception:
-        return []
+    """Scan nearby Bluetooth devices (platform-aware)."""
+    return platform_scan_bluetooth()
 
 
 def current_scan_rssi(rf_data, ssid, channel):
@@ -319,42 +301,56 @@ def current_scan_rssi(rf_data, ssid, channel):
 
 
 def collect_snapshot():
-    """Collect a single snapshot of WiFi state."""
-    iface = get_wifi_data()
-    if "_error" in iface:
+    """Collect a single snapshot of WiFi state (cross-platform)."""
+    info = collect_wifi_info()
+    if "_error" in info:
         return {
             "timestamp": now(),
             "status": "error",
-            "error": iface["_error"],
+            "error": info["_error"],
         }
 
-    status_raw = iface.get("spairport_status_information", "")
-    connected = "connected" in status_raw.lower()
+    connected = info.get("connected", False)
+    ssid = info.get("ssid")
+    channel = info.get("channel")
+    band = info.get("band")
+    width = info.get("width")
+    phy = info.get("phy_mode")
+    signal_val = info.get("signal_dbm")
+    noise = info.get("noise_dbm")
+    snr = info.get("snr_db")
+    tx_rate = info.get("tx_rate_mbps")
+    mcs = info.get("mcs_index")
+    security = info.get("security")
+    channel_dist = info.get("channel_distribution", {})
+    channel_networks = info.get("channel_networks", {})
+    neighbor_count = info.get("neighbor_count", 0)
+    raw_iface = info.get("_iface")
 
-    current = iface.get("spairport_current_network_information", {})
-    ssid = current.get("_name")
-    channel_raw = current.get("spairport_network_channel")
-    channel, band, width = parse_channel_info(channel_raw)
-    phy = current.get("spairport_network_phymode")
-    signal, noise = parse_signal_noise(current.get("spairport_signal_noise"))
-    snr = (signal - noise) if (signal is not None and noise is not None) else None
-    tx_rate = current.get("spairport_network_rate")
-    mcs = current.get("spairport_network_mcs")
-    security = current.get("spairport_security_mode")
+    scan_rssi_dbm = None
+    scan_bssid = None
 
-    neighbor_count, channel_dist, channel_networks = count_neighbors(iface)
+    if supports_rf_scan():
+        rf_data = rf_scan()
+        channel_networks, rf_channel_summary = merge_rf_data(channel_networks, rf_data)
+        scan_rssi_dbm, scan_bssid = current_scan_rssi(rf_data, ssid, channel)
 
-    rf_data = rf_scan()
-    channel_networks, rf_channel_summary = merge_rf_data(channel_networks, rf_data)
-    scan_rssi_dbm, scan_bssid = current_scan_rssi(rf_data, ssid, channel)
+        merged_named = sum(
+            1 for nets in channel_networks.values() for n in nets if not n.get("anonymous")
+        )
+        merged_anon = sum(
+            1 for nets in channel_networks.values() for n in nets if n.get("anonymous")
+        )
+        neighbor_count = merged_named
+    else:
+        rf_channel_summary = {}
+        merged_named = sum(
+            1 for nets in channel_networks.values() for n in nets if not n.get("anonymous")
+        )
+        merged_anon = sum(
+            1 for nets in channel_networks.values() for n in nets if n.get("anonymous")
+        )
 
-    # Recompute top-level counts from the merged authoritative network list.
-    merged_named = sum(
-        1 for nets in channel_networks.values() for n in nets if not n.get("anonymous")
-    )
-    merged_anon = sum(
-        1 for nets in channel_networks.values() for n in nets if n.get("anonymous")
-    )
     if channel is not None:
         same_channel_neighbors = len(channel_networks.get(channel, []))
     else:
@@ -378,7 +374,7 @@ def collect_snapshot():
         "band": band,
         "width": width,
         "phy_mode": phy,
-        "signal_dbm": signal,
+        "signal_dbm": signal_val,
         "scan_signal_dbm": scan_rssi_dbm,
         "current_bssid": scan_bssid,
         "noise_dbm": noise,
@@ -386,7 +382,7 @@ def collect_snapshot():
         "tx_rate_mbps": tx_rate,
         "mcs_index": mcs,
         "security": security,
-        "neighbor_count": merged_named,
+        "neighbor_count": neighbor_count,
         "same_channel_neighbors": same_channel_neighbors,
         "channel_distribution": channel_dist,
         "channel_networks": channel_networks,
@@ -575,7 +571,7 @@ def main():
 
     native_app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WiFiScanner.app")
     native_started = False
-    if os.path.isdir(native_app_path):
+    if supports_native_app() and os.path.isdir(native_app_path):
         try:
             result = subprocess.run(["pgrep", "-f", "wifi_scanner_app"], capture_output=True)
             if result.returncode != 0:
@@ -589,14 +585,19 @@ def main():
 
     ensure_log_dir(args.log_dir)
 
-    print(f"[{now()}] WiFi Monitor started")
+    print(f"[{now()}] WiFi Monitor started ({PLATFORM})")
     print(f"  Interval : {args.interval}s")
     print(f"  Log dir  : {args.log_dir}")
     print(f"  Ping test: {PING_TARGET}")
     print(f"  AP ping  : {PING_AP or 'disabled (use --ap 192.168.1.10)'}")
-    scanner_ok = os.path.isfile(SCANNER_PATH)
-    print(f"  Native   : {'running' if native_started or os.path.isdir(native_app_path) else 'not found (run: bash build_scanner_app.sh)'}")
-    print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
+    if supports_native_app():
+        scanner_ok = os.path.isfile(SCANNER_PATH)
+        print(f"  Native   : {'running' if native_started or os.path.isdir(native_app_path) else 'not found (run: bash build_scanner_app.sh)'}")
+        print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
+    else:
+        from wifi_platform import _iface as get_iface
+        print(f"  WiFi iface: {get_iface()}")
+        print(f"  Data src : nmcli + iw")
     print(f"  BT scan  : enabled")
     print("-" * 120)
 
@@ -621,7 +622,7 @@ def main():
             time.sleep(0.1)
 
     print(f"[{now()}] Monitor stopped. Logs saved to {args.log_dir}/")
-    if native_started:
+    if native_started and supports_native_app():
         try:
             subprocess.run(["pkill", "-f", "wifi_scanner_app"], capture_output=True)
         except Exception:

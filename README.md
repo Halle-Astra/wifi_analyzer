@@ -2,7 +2,16 @@
 
 持续采集 WiFi 连接指标并记录到本地日志，用于在网络出问题后回溯分析。
 
-纯 Python 实现，零第三方依赖，仅需 macOS 自带的 `system_profiler` 和 `ping`。可选编译 Swift 扫描器以获取匿名/隐藏设备信息。
+纯 Python 实现，零第三方依赖。macOS 使用 `system_profiler` 和 `ping`，Linux 使用 `iw`、`nmcli` 和 `ping`。可选编译 Swift 扫描器（仅 macOS）以获取匿名/隐藏设备信息。
+
+## 跨平台支持
+
+| 平台 | 数据来源 | RF 扫描 | 蓝牙扫描 | 原生 App |
+|------|----------|---------|----------|----------|
+| macOS | `system_profiler` | Swift CoreWLAN | `system_profiler SPBluetoothDataType` | WiFiScanner.app |
+| Linux | `iw` + `nmcli` | — | `bluetoothctl` | — |
+
+运行 `bash build_scanner_app.sh` 会自动检测平台并执行对应操作。
 
 ## 工具组成
 
@@ -11,7 +20,8 @@
 | `wifi_monitor.py` | 监控守护进程 — 按固定间隔采集 WiFi 数据并写入日志 |
 | `wifi_web.py` | Web UI 仪表盘 — 浏览器实时查看监控数据 |
 | `wifi_analyzer.py` | 分析工具 — 对历史日志进行统计、回溯和可视化 |
-| `wifi_scanner.swift` | Swift CLI 扫描器源码 — 检测匿名/隐藏设备及其信号强度 |
+| `wifi_platform.py` | 平台抽象层 — 自动检测 macOS/Linux 并调用对应的系统命令 |
+| `wifi_scanner.swift` | Swift CLI 扫描器源码 — 检测匿名/隐藏设备及其信号强度（仅 macOS） |
 | `wifi_scanner` | 编译后的 CLI 扫描器二进制 |
 | `native_wifi_scanner_app.swift` | 原生 macOS 扫描 App 源码（支持定位权限） |
 | `build_scanner_app.sh` | 构建 `WiFiScanner.app` 的脚本 |
@@ -236,10 +246,19 @@ python3 wifi_web.py --ap 192.168.1.10
 
 ## 系统要求
 
+### macOS
 - macOS (使用 `system_profiler SPAirPortDataType` 获取 WiFi 数据)
 - Python 3.6+
 - 无需安装任何第三方库
 - 可选：Xcode Command Line Tools（用于编译 Swift RF 扫描器）
+
+### Linux
+- Python 3.6+
+- `iw`（WiFi 接口信息和噪声数据）
+- `nmcli`（NetworkManager，用于扫描可见网络）
+- `ping`（通常已预装）
+- 可选：`bluetoothctl`（蓝牙设备扫描，`sudo apt install bluez`）
+- 无需安装任何 Python 第三方库
 
 ## 参数参考
 

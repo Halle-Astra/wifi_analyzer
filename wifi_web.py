@@ -28,14 +28,17 @@ from wifi_monitor import (
     collect_snapshot, detect_events, write_csv_row, write_json_line,
     ensure_log_dir, now, SCANNER_PATH,
 )
+from wifi_platform import PLATFORM, supports_native_app
 
 NATIVE_APP_PATH = os.path.join(SCRIPT_DIR, "WiFiScanner.app")
 NATIVE_APP_STARTED = False
 
 
 def start_native_scanner():
-    """Launch WiFiScanner.app if it exists and isn't already running."""
+    """Launch WiFiScanner.app if it exists and isn't already running (macOS only)."""
     global NATIVE_APP_STARTED
+    if not supports_native_app():
+        return False
     if not os.path.isdir(NATIVE_APP_PATH):
         return False
     try:
@@ -405,15 +408,20 @@ def main():
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
-    scanner_ok = os.path.isfile(SCANNER_PATH)
+    scanner_ok = os.path.isfile(SCANNER_PATH) if supports_native_app() else False
     native_ok = start_native_scanner()
-    print(f"[{now()}] WiFi Monitor Web UI starting")
+    print(f"[{now()}] WiFi Monitor Web UI starting ({PLATFORM})")
     print(f"  Port     : {args.port}")
     print(f"  Interval : {args.interval}s")
     print(f"  Log dir  : {args.log_dir}")
     print(f"  AP ping  : {args.ap or 'disabled (use --ap 192.168.1.10)'}")
-    print(f"  Native   : {'running' if native_ok else 'not found (run: bash build_scanner_app.sh)'}")
-    print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
+    if supports_native_app():
+        print(f"  Native   : {'running' if native_ok else 'not found (run: bash build_scanner_app.sh)'}")
+        print(f"  RF scan  : {'enabled' if scanner_ok else 'disabled'}")
+    else:
+        from wifi_platform import _iface as get_iface
+        print(f"  WiFi iface: {get_iface()}")
+        print(f"  Data src : nmcli + iw")
     print(f"  Dashboard: http://localhost:{args.port}")
 
     sampler_thread = threading.Thread(

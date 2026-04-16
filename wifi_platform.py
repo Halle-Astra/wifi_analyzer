@@ -261,21 +261,8 @@ def _linux_get_survey_info():
         return ""
 
 
-def _linux_iwlist_scan():
-    """Use iwlist to scan visible WiFi networks with real RSSI values.
-
-    Returns a list of dicts, each with keys:
-        bssid, ssid, channel, freq, rssi, security, band, width, mode
-    """
-    try:
-        result = subprocess.run(
-            ["iwlist", _iface(), "scan"],
-            capture_output=True, text=True, timeout=15,
-        )
-        output = result.stdout
-    except Exception:
-        return []
-
+def _parse_iwlist_output(output):
+    """Parse iwlist scan output into a list of network dicts."""
     networks = []
     current = None
 
@@ -353,67 +340,62 @@ def _linux_iwlist_scan():
     return networks
 
 
-def _linux_nmcli_scan():
-    """Use nmcli to list visible WiFi networks (fallback if iwlist unavailable)."""
-    try:
-        result = subprocess.run(
-            ["nmcli", "-t", "-f",
-             "BSSID,SSID,CHAN,FREQ,SIGNAL,SECURITY,MODE,RATE",
-             "dev", "wifi", "list", "--rescan", "no"],
-            capture_output=True, text=True, timeout=10,
-        )
-        networks = []
-        for line in result.stdout.strip().splitlines():
-            unescaped = line.replace("\\:", "\x00")
-            parts = unescaped.split(":")
-            parts = [p.replace("\x00", ":") for p in parts]
-            if len(parts) < 8:
-                continue
-            bssid_raw = parts[0]
-            ssid = parts[1]
-            try:
-                chan = int(parts[2])
-            except ValueError:
-                chan = 0
-            freq_match = re.search(r"(\d+)", parts[3])
-            freq = int(freq_match.group(1)) if freq_match else 0
-            try:
-                signal_pct = int(parts[4])
-            except ValueError:
-                signal_pct = 0
-            rssi_est = int((signal_pct / 2) - 100) if signal_pct else -100
-            security = parts[5]
-            rate_match = re.search(r"([\d.]+)", parts[7])
-            rate = float(rate_match.group(1)) if rate_match else None
-            band = _freq_to_band(freq) if freq else ""
-            width_guess = "20MHz"
-            if rate and rate > 300:
-                width_guess = "80MHz"
-            elif rate and rate > 150:
-                width_guess = "40MHz"
+_iwlist_needs_sudo = None  # None = not tested yet, True/False = tested
 
-            networks.append({
-                "bssid": bssid_raw,
-                "ssid": ssid,
-                "channel": chan,
-                "freq": freq,
-                "rssi": rssi_est,
-                "security": security,
-                "band": band,
-                "width": width_guess,
-                "mode": "Infra",
-            })
-        return networks
-    except Exception:
-        return []
+
+def _linux_iwlist_scan():
+    """Scan WiFi networks via iwlist.
+
+    Without root, iwlist only reads kernel cache (usually just the connected AP).
+    With root (sudo or cap_net_admin), it triggers a real scan and discovers all
+    nearby networks on both 2.4GHz and 5GHz bands.
+
+    Strategy:
+      1. First call: try plain iwlist; if only <=1 result, retry with sudo.
+      2. Remember whether sudo was needed so subsequent calls go straight to it.
+      3. If sudo fails (no permission / password required), fall back to cache.
+    """
+    global _iwlist_needs_sudo
+    iface = _iface()
+
+    def _run_iwlist(use_sudo=False):
+        cmd = ["sudo", "iwlist", iface, "scan"] if use_sudo else ["iwlist", iface, "scan"]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode != 0 and use_sudo:
+                return None
+            return _parse_iwlist_output(result.stdout)
+        except Exception:
+            return None
+
+    if _iwlist_needs_sudo is True:
+        nets = _run_iwlist(use_sudo=True)
+        if nets is not None:
+            return nets
+        return _run_iwlist(use_sudo=False) or []
+
+    if _iwlist_needs_sudo is False:
+        return _run_iwlist(use_sudo=False) or []
+
+    plain = _run_iwlist(use_sudo=False) or []
+    if len(plain) > 1:
+        _iwlist_needs_sudo = False
+        return plain
+
+    sudo_nets = _run_iwlist(use_sudo=True)
+    if sudo_nets is not None and len(sudo_nets) > len(plain):
+        _iwlist_needs_sudo = True
+        return sudo_nets
+
+    _iwlist_needs_sudo = False
+    return plain
 
 
 def _linux_scan_neighbors():
-    """Scan neighbor networks. Prefer iwlist (real RSSI), fall back to nmcli."""
-    networks = _linux_iwlist_scan()
-    if not networks:
-        networks = _linux_nmcli_scan()
-    return networks
+    """Scan neighbor networks via iwlist (with automatic sudo detection)."""
+    return _linux_iwlist_scan()
 
 
 def _linux_scan_bluetooth():

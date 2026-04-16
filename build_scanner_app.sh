@@ -40,9 +40,26 @@ if [ "$OS" = "Darwin" ]; then
     echo "wifi_web.py and wifi_monitor.py will auto-detect this file."
 
 elif [ "$OS" = "Linux" ]; then
-    echo "Linux detected — no native scanner build needed."
+    echo "Linux detected — building native nl80211 WiFi scanner..."
     echo ""
-    echo "WiFi data is collected via iwlist and iw (pre-installed on most distros)."
+
+    if command -v gcc >/dev/null 2>&1; then
+        gcc -O2 -Wall -o wifi_scanner wifi_scanner.c 2>&1
+        if [ $? -eq 0 ]; then
+            echo "Done! Built wifi_scanner (nl80211 native scanner)"
+            echo ""
+            echo "功能："
+            echo "  - 直接通过内核 nl80211 接口扫描所有 WiFi 网络"
+            echo "  - 检测隐藏 SSID / 匿名 RF 设备"
+            echo "  - 精确 RSSI (dBm) 和信道宽度 (20/40/80/160MHz)"
+            echo "  - 无需 libnl 等第三方库"
+        else
+            echo "WARNING: 编译失败，将使用 iwlist 作为后备扫描方式。"
+        fi
+    else
+        echo "WARNING: gcc not found. Install with: sudo apt install build-essential"
+        echo "Will fall back to iwlist for WiFi scanning."
+    fi
     echo ""
     echo "Required tools:"
     echo "  - iwlist    (sudo apt install wireless-tools)"
@@ -73,10 +90,12 @@ elif [ "$OS" = "Linux" ]; then
     echo ""
     IWLIST_PATH="$(command -v iwlist 2>/dev/null || echo '/usr/sbin/iwlist')"
     BTCTL_PATH="$(command -v bluetoothctl 2>/dev/null || echo '/usr/bin/bluetoothctl')"
+    SCANNER_PATH="$(pwd)/wifi_scanner"
     echo "手动配置（sudoers 免密）："
-    echo "  sudo bash -c 'echo \"$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH\" > /etc/sudoers.d/wifi-scan'"
+    echo "  sudo bash -c 'echo \"$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH, $SCANNER_PATH\" > /etc/sudoers.d/wifi-scan'"
     echo ""
-    echo "  - iwlist：发现附近所有 WiFi 网络（含 2.4G/5G 频谱图）"
+    echo "  - wifi_scanner：nl80211 原生扫描（含隐藏 SSID / 匿名 RF 设备）"
+    echo "  - iwlist：后备 WiFi 扫描"
     echo "  - bluetoothctl：发现附近 BLE 低功耗蓝牙设备"
     echo ""
     echo "如不配置，程序仍可运行，但频谱图只显示已连接 WiFi，蓝牙列表为空。"
@@ -84,7 +103,7 @@ elif [ "$OS" = "Linux" ]; then
 
     read -rp "是否现在自动配置 sudoers 免密？[y/N] " REPLY
     if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-        SUDOERS_LINE="$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH"
+        SUDOERS_LINE="$(whoami) ALL=(root) NOPASSWD: $IWLIST_PATH, $BTCTL_PATH, $SCANNER_PATH"
         sudo bash -c "echo '$SUDOERS_LINE' > /etc/sudoers.d/wifi-scan && chmod 440 /etc/sudoers.d/wifi-scan"
         if [ $? -eq 0 ]; then
             echo "Done! 已配置免密 sudo iwlist + bluetoothctl。"

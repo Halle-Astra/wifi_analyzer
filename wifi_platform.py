@@ -413,8 +413,61 @@ def _linux_iwlist_scan():
     return plain
 
 
+LINUX_SCANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi_scanner")
+
+BW_NAMES_LINUX = {0: "20MHz", 1: "20MHz", 2: "40MHz", 3: "80MHz", 4: "160MHz"}
+BAND_NAMES_LINUX = {0: "unknown", 1: "2.4GHz", 2: "5GHz", 3: "6GHz"}
+
+
+def _linux_native_scan():
+    """Run the compiled nl80211 scanner binary if available.
+
+    Returns a list of network dicts compatible with the channel_networks format,
+    or None if the scanner is not available.
+    """
+    if not os.path.isfile(LINUX_SCANNER_PATH):
+        return None
+    try:
+        use_sudo = os.geteuid() != 0
+        cmd = ["sudo", LINUX_SCANNER_PATH] if use_sudo else [LINUX_SCANNER_PATH]
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            cmd = [LINUX_SCANNER_PATH, "-n"]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5,
+            )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        data = json.loads(result.stdout)
+        networks = []
+        for net in data.get("networks", []):
+            bw_raw = net.get("channelWidth", 0)
+            band_raw = net.get("channelBand", 0)
+            networks.append({
+                "bssid": net.get("bssid", ""),
+                "ssid": net.get("ssid", ""),
+                "channel": net.get("channel", 0),
+                "freq": 0,
+                "rssi": net.get("rssi", -100),
+                "noise": net.get("noise", 0),
+                "security": "",
+                "band": BAND_NAMES_LINUX.get(band_raw, ""),
+                "width": BW_NAMES_LINUX.get(bw_raw, "20MHz"),
+                "hidden": net.get("hidden", False),
+                "beacon_interval": net.get("beaconInterval", 0),
+            })
+        return networks
+    except Exception:
+        return None
+
+
 def _linux_scan_neighbors():
-    """Scan neighbor networks via iwlist (with automatic sudo detection)."""
+    """Scan neighbor networks. Prefer native nl80211 scanner, fall back to iwlist."""
+    native = _linux_native_scan()
+    if native is not None and len(native) > 0:
+        return native
     return _linux_iwlist_scan()
 
 

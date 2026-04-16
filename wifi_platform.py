@@ -261,8 +261,100 @@ def _linux_get_survey_info():
         return ""
 
 
+def _linux_iwlist_scan():
+    """Use iwlist to scan visible WiFi networks with real RSSI values.
+
+    Returns a list of dicts, each with keys:
+        bssid, ssid, channel, freq, rssi, security, band, width, mode
+    """
+    try:
+        result = subprocess.run(
+            ["iwlist", _iface(), "scan"],
+            capture_output=True, text=True, timeout=15,
+        )
+        output = result.stdout
+    except Exception:
+        return []
+
+    networks = []
+    current = None
+
+    for line in output.splitlines():
+        line = line.strip()
+
+        cell_match = re.match(r"Cell\s+\d+\s+-\s+Address:\s*(\S+)", line)
+        if cell_match:
+            if current is not None:
+                networks.append(current)
+            current = {
+                "bssid": cell_match.group(1),
+                "ssid": "",
+                "channel": 0,
+                "freq": 0,
+                "rssi": -100,
+                "security": "",
+                "band": "",
+                "width": "20MHz",
+                "mode": "",
+            }
+            continue
+
+        if current is None:
+            continue
+
+        if line.startswith("ESSID:"):
+            essid_match = re.search(r'ESSID:"(.*)"', line)
+            if essid_match:
+                current["ssid"] = essid_match.group(1)
+
+        elif line.startswith("Channel:"):
+            ch_match = re.search(r"Channel:\s*(\d+)", line)
+            if ch_match:
+                current["channel"] = int(ch_match.group(1))
+
+        elif line.startswith("Frequency:"):
+            freq_match = re.search(r"Frequency:\s*([\d.]+)\s*GHz", line)
+            if freq_match:
+                freq_ghz = float(freq_match.group(1))
+                current["freq"] = int(freq_ghz * 1000)
+                current["band"] = _freq_to_band(current["freq"])
+            ch_in_freq = re.search(r"\(Channel\s+(\d+)\)", line)
+            if ch_in_freq and current["channel"] == 0:
+                current["channel"] = int(ch_in_freq.group(1))
+
+        elif "Signal level" in line:
+            sig_match = re.search(r"Signal level[=:]\s*(-?\d+)\s*dBm", line)
+            if sig_match:
+                current["rssi"] = int(sig_match.group(1))
+            else:
+                qual_match = re.search(r"Quality[=:](\d+)/(\d+)", line)
+                if qual_match:
+                    quality = int(qual_match.group(1))
+                    max_qual = int(qual_match.group(2))
+                    current["rssi"] = int((quality / max_qual) * 70 - 110)
+
+        elif line.startswith("Mode:"):
+            mode_match = re.search(r"Mode:\s*(\S+)", line)
+            if mode_match:
+                current["mode"] = mode_match.group(1)
+
+        elif "Encryption key:on" in line:
+            current["security"] = "encrypted"
+
+        elif "WPA2" in line or "IEEE 802.11i/WPA2" in line:
+            current["security"] = "WPA2"
+
+        elif "WPA " in line and "WPA2" not in current.get("security", ""):
+            current["security"] = "WPA"
+
+    if current is not None:
+        networks.append(current)
+
+    return networks
+
+
 def _linux_nmcli_scan():
-    """Use nmcli to list visible WiFi networks (no root required)."""
+    """Use nmcli to list visible WiFi networks (fallback if iwlist unavailable)."""
     try:
         result = subprocess.run(
             ["nmcli", "-t", "-f",
@@ -289,7 +381,7 @@ def _linux_nmcli_scan():
                 signal_pct = int(parts[4])
             except ValueError:
                 signal_pct = 0
-            rssi_est = (signal_pct / 2) - 100 if signal_pct else -100
+            rssi_est = int((signal_pct / 2) - 100) if signal_pct else -100
             security = parts[5]
             rate_match = re.search(r"([\d.]+)", parts[7])
             rate = float(rate_match.group(1)) if rate_match else None
@@ -305,16 +397,23 @@ def _linux_nmcli_scan():
                 "ssid": ssid,
                 "channel": chan,
                 "freq": freq,
-                "signal_pct": signal_pct,
-                "rssi_est": rssi_est,
+                "rssi": rssi_est,
                 "security": security,
                 "band": band,
                 "width": width_guess,
-                "rate": rate,
+                "mode": "Infra",
             })
         return networks
     except Exception:
         return []
+
+
+def _linux_scan_neighbors():
+    """Scan neighbor networks. Prefer iwlist (real RSSI), fall back to nmcli."""
+    networks = _linux_iwlist_scan()
+    if not networks:
+        networks = _linux_nmcli_scan()
+    return networks
 
 
 def _linux_scan_bluetooth():
@@ -427,12 +526,12 @@ def linux_collect_wifi_info():
         mcs = int(mcs_match.group(1))
 
     security = None
-    nmcli_nets = _linux_nmcli_scan()
+    scanned_nets = _linux_scan_neighbors()
 
     channel_networks = {}
     channel_counts = {}
-    for net in nmcli_nets:
-        if net["ssid"] == ssid and net.get("bssid") == bssid:
+    for net in scanned_nets:
+        if net["ssid"] == ssid and net.get("bssid", "").lower() == (bssid or "").lower():
             security = net.get("security")
         ch = net["channel"]
         if ch:
@@ -441,13 +540,13 @@ def linux_collect_wifi_info():
                 channel_networks[ch] = []
             channel_networks[ch].append({
                 "ssid": net["ssid"],
-                "bssid": net["bssid"],
+                "bssid": net.get("bssid", ""),
                 "channel_raw": f"{ch} ({net['freq']} MHz)" if net.get("freq") else str(ch),
                 "band": net.get("band", ""),
                 "width": net.get("width", ""),
                 "phy_mode": "",
                 "security": net.get("security", ""),
-                "rssi": net["rssi_est"],
+                "rssi": net["rssi"],
                 "anonymous": not bool(net["ssid"]),
             })
 

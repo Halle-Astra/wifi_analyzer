@@ -191,9 +191,29 @@ static int freq_to_band(int freq)
     return BAND_6GHZ;
 }
 
+/* All 2.4GHz + 5GHz frequencies to ensure full channel coverage.
+ * Default kernel scan may skip DFS channels or weak signals. */
+static const __u32 all_freqs[] = {
+    /* 2.4 GHz: ch 1-14 */
+    2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462, 2467, 2472, 2484,
+    /* 5 GHz UNII-1: ch 36-48 */
+    5180, 5200, 5220, 5240,
+    /* 5 GHz UNII-2: ch 52-64 (DFS) */
+    5260, 5280, 5300, 5320,
+    /* 5 GHz UNII-2 Extended: ch 100-144 (DFS) */
+    5500, 5520, 5540, 5560, 5580, 5600, 5620, 5640, 5660, 5680, 5700, 5720,
+    /* 5 GHz UNII-3: ch 149-165 */
+    5745, 5765, 5785, 5805, 5825,
+};
+#define NUM_FREQS (sizeof(all_freqs) / sizeof(all_freqs[0]))
+
 static int trigger_scan(int ifindex)
 {
-    struct nl_msg msg;
+    /* Use a larger message buffer for the frequency list */
+    struct {
+        struct nlmsghdr nlh;
+        char payload[8192];
+    } msg;
     memset(&msg, 0, sizeof(msg));
     msg.nlh.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
     msg.nlh.nlmsg_type = nl80211_id;
@@ -206,11 +226,23 @@ static int trigger_scan(int ifindex)
     int off = GENL_HDRLEN;
     __u32 idx = ifindex;
     nla_put(msg.payload, &off, NL80211_ATTR_IFINDEX, &idx, 4);
+
+    /* Scan flags: flush cache for fresh results */
+    __u32 flags = (1 << 1); /* NL80211_SCAN_FLAG_FLUSH */
+    nla_put(msg.payload, &off, NL80211_ATTR_SCAN_FLAGS, &flags, 4);
+
+    /* Specify all frequencies for full channel coverage */
+    struct nlattr *freq_nest = nla_put(msg.payload, &off,
+        NL80211_ATTR_SCAN_FREQUENCIES | NLA_F_NESTED, NULL, 0);
+    int nest_start = off;
+    for (unsigned i = 0; i < NUM_FREQS; i++) {
+        nla_put(msg.payload, &off, i + 1, &all_freqs[i], 4);
+    }
+    freq_nest->nla_len = NLA_HDRLEN + (off - nest_start);
+
     msg.nlh.nlmsg_len = NLMSG_LENGTH(off);
 
-    if (nl_send(&msg) < 0) return -1;
-
-    /* Wait for scan completion or ACK/error */
+    if (nl_send((struct nl_msg *)&msg) < 0) return -1;
     char buf[BUF_SIZE];
     int attempts = 0;
     while (attempts++ < 50) {  /* up to ~10 seconds */

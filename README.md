@@ -2,30 +2,31 @@
 
 持续采集 WiFi 连接指标并记录到本地日志，用于在网络出问题后回溯分析。
 
-纯 Python 实现，零第三方依赖。macOS 使用 `system_profiler` 和 `ping`，Linux 使用 `iw`、`nmcli` 和 `ping`。可选编译 Swift 扫描器（仅 macOS）以获取匿名/隐藏设备信息。
+支持 macOS 和 Linux，纯 Python 实现，零第三方依赖。自动检测平台并调用对应的系统接口采集数据。
 
 ## 跨平台支持
 
-| 平台 | 数据来源 | RF 扫描 | 蓝牙扫描 | 原生 App |
-|------|----------|---------|----------|----------|
-| macOS | `system_profiler` | Swift CoreWLAN | `system_profiler SPBluetoothDataType` | WiFiScanner.app |
-| Linux | `iw` + `nmcli` | — | `bluetoothctl` | — |
+| 平台 | WiFi 数据来源 | RF 扫描（含隐藏设备） | 蓝牙扫描 |
+|------|--------------|----------------------|----------|
+| macOS | `system_profiler` | Swift CoreWLAN / WiFiScanner.app | `system_profiler SPBluetoothDataType` |
+| Linux | `iw` + nl80211 原生扫描器 | `wifi_scanner`（C, 需编译） | `bluetoothctl scan on` |
 
-运行 `bash build_scanner_app.sh` 会自动检测平台并执行对应操作。
+运行 `bash build_scanner_app.sh` 会自动检测平台，macOS 编译 Swift App，Linux 编译 C 扫描器并配置权限。
 
 ## 工具组成
 
 | 文件 | 用途 |
 |------|------|
-| `wifi_monitor.py` | 监控守护进程 — 按固定间隔采集 WiFi 数据并写入日志 |
-| `wifi_web.py` | Web UI 仪表盘 — 浏览器实时查看监控数据 |
-| `wifi_analyzer.py` | 分析工具 — 对历史日志进行统计、回溯和可视化 |
+| `wifi_web.py` | **Web UI 仪表盘** — 包含数据采集 + 浏览器实时监控，一条命令搞定 |
+| `wifi_monitor.py` | 命令行监控守护进程 — 纯终端输出 + 日志，不需要浏览器 |
+| `wifi_analyzer.py` | 离线分析工具 — 对历史日志进行统计、回溯和可视化 |
 | `wifi_platform.py` | 平台抽象层 — 自动检测 macOS/Linux 并调用对应的系统命令 |
-| `wifi_scanner.swift` | Swift CLI 扫描器源码 — 检测匿名/隐藏设备及其信号强度（仅 macOS） |
-| `wifi_scanner` | 编译后的 CLI 扫描器二进制 |
-| `native_wifi_scanner_app.swift` | 原生 macOS 扫描 App 源码（支持定位权限） |
-| `build_scanner_app.sh` | 构建 `WiFiScanner.app` 的脚本 |
-| `Info.plist` | 原生扫描 App 的 bundle 配置和定位权限说明 |
+| `wifi_scanner.c` | Linux nl80211 原生扫描器源码 — 检测隐藏 SSID / 匿名 RF 设备 |
+| `wifi_scanner.swift` | macOS Swift CLI 扫描器源码（CoreWLAN） |
+| `native_wifi_scanner_app.swift` | macOS 原生扫描 App 源码（支持定位权限） |
+| `build_scanner_app.sh` | 跨平台构建脚本 — 自动检测平台并编译对应的扫描器 |
+
+> **`wifi_web.py` vs `wifi_monitor.py`**：两者都会采集数据并写入日志，区别是 `wifi_web.py` 额外提供浏览器 Web UI。大多数情况下只需要运行 `wifi_web.py` 即可，不需要同时运行 `wifi_monitor.py`。如果不需要 Web UI（如服务器/无头环境），再使用 `wifi_monitor.py`。
 
 ## 采集指标
 
@@ -58,140 +59,79 @@
 
 ## 快速开始
 
-### 编译原生扫描 App（更推荐）
-
-如果你希望尽量拿到 SSID / BSSID，从而让频谱图里的命名网络功率匹配更准确，建议改用原生 App 版本。这样 macOS 才能正常给定位权限：
+### 1. 编译扫描器（推荐）
 
 ```bash
 bash build_scanner_app.sh
-open WiFiScanner.app
 ```
 
-首次打开后，到：
-- `系统设置 -> 隐私与安全性 -> 定位服务`
+脚本会自动检测平台：
+- **macOS** — 编译 Swift WiFiScanner.app，首次运行需授权定位权限
+- **Linux** — 编译 C nl80211 扫描器，交互式配置 sudoers 免密
 
-确认 `WiFi Scanner` 已被允许。
+不编译也能运行，只是看不到隐藏 SSID / 匿名设备，频谱图信息会少一些。
 
-原生 App 会持续把扫描结果写到：
+### 2. 启动监控
 
-```bash
-~/.wifi-monitor/native_scan.json
-```
-
-`wifi_web.py` 和 `wifi_monitor.py` 会自动优先读取这个文件。
-
-### 编译 RF 扫描器（推荐）
-
-RF 扫描器能检测到隐藏 SSID 和匿名设备，强烈建议编译：
+**Web UI（推荐，大多数场景用这个就够了）：**
 
 ```bash
-swiftc -framework CoreWLAN -framework Foundation wifi_scanner.swift -o wifi_scanner
-```
-
-编译后 `wifi_monitor.py` 会自动检测并使用它。不编译也能正常运行，只是看不到匿名设备。
-
-### Web UI 实时仪表盘（推荐）
-
-一条命令启动，浏览器打开即可实时查看所有监控数据：
-
-```bash
-# 默认端口 8800，采样间隔 10 秒
+# 一条命令启动采集 + Web 仪表盘
 python3 wifi_web.py
 
-# 同时监控 AP 延迟（推荐）
+# 同时监控 AP 延迟（强烈推荐）
 python3 wifi_web.py --ap 192.168.1.10
-
-# 自定义端口和采样间隔
-python3 wifi_web.py -p 9000 -i 5
 ```
 
-打开 http://localhost:8800 即可看到：
-- 多页面 Web UI：概览 / 信号 / 信道 / 干扰 / 事件
-- Dashboard 概览卡片和趋势图
-- 带时间横轴和单位纵轴的详细图表，方便分析波动
-- AP vs 公网 Ping 对比图（`--ap` 启用时），一眼看出延迟跳变发生在哪一段
-- 2.4GHz / 5GHz 频谱梯形图，支持鼠标框选缩放和历史快照查看
-- 专门的「干扰」页面：噪声底限趋势、蓝牙设备、匿名 RF 源、疑似非 WiFi 干扰时段
-- 顶部可选择并载入历史日志文件，时间轴一上来就能覆盖旧数据
-- 图表按需只加载滑块附近约 15 分钟窗口，避免历史数据很多时页面卡顿
-- 历史滑块支持 `←` `→` 方向键做精细控制
-- 各信道上的所有设备（命名 + 匿名），当前信道高亮
-- 蓝牙设备列表（潜在 2.4GHz 干扰源）
-- 事件时间线（断连、信道切换等）
-- 历史回溯滑块 + 实时刷新开关，分析历史数据时不被新数据打断
+打开 http://localhost:8800 即可看到实时监控面板。`wifi_web.py` 会同时将数据写入 `logs/` 目录。
 
-Web UI 同时会将数据写入 `logs/` 目录，关闭后可用 `wifi_analyzer.py` 做离线分析。重新启动服务后，可以在顶部的「历史日志」栏载入旧日志，把它们并入当前时间轴。
+> `wifi_web.py` 已经包含了完整的数据采集功能，**不需要**同时运行 `wifi_monitor.py`。
 
-### 命令行监控
+**纯命令行（无头环境/服务器）：**
 
 ```bash
-# 默认每 10 秒采样，日志写入 ./logs/
-python3 wifi_monitor.py
-
-# 同时监控 AP 延迟
+# 终端输出 + 日志记录
 python3 wifi_monitor.py --ap 192.168.1.10
 
-# 自定义采样间隔为 5 秒
-python3 wifi_monitor.py -i 5
-
-# 指定日志目录
-python3 wifi_monitor.py -d ~/wifi-logs
-
-# 静默模式（不输出到终端，只写日志），适合后台长期运行
-nohup python3 wifi_monitor.py -q &
+# 后台静默运行
+nohup python3 wifi_monitor.py -q --ap 192.168.1.10 &
 ```
 
 按 `Ctrl+C` 可优雅停止。
 
-### 分析日志
+### 3. 分析日志
 
 ```bash
-# 全量分析报告（推荐首次使用）
-python3 wifi_analyzer.py all
-
-# 仅查看断连 / 网络中断事件
-python3 wifi_analyzer.py disconnects
-
-# 查看所有检测到的事件时间线
-python3 wifi_analyzer.py events
-
-# 查看信道拥挤度分析
-python3 wifi_analyzer.py channels
-
-# 查看每个信道上具体有哪些网络（最新一条快照）
-python3 wifi_analyzer.py neighbors
-
-# 查看某个时间点附近各信道上都有谁
-python3 wifi_analyzer.py neighbors "2025-04-13 15:30" -w 10
-
-# 查看信号强度变化趋势
-python3 wifi_analyzer.py signal
-
-# 查看总体统计摘要
-python3 wifi_analyzer.py summary
+python3 wifi_analyzer.py all                           # 全量分析报告
+python3 wifi_analyzer.py around "2025-04-13 15:30"     # 回溯某时刻 ±5 分钟
+python3 wifi_analyzer.py disconnects                   # 断连事件
+python3 wifi_analyzer.py neighbors "2025-04-13 15:30"  # 该时刻各信道上的设备
+python3 wifi_analyzer.py channels                      # 信道拥挤度
+python3 wifi_analyzer.py signal                        # 信号趋势
 ```
 
-### 回溯特定时间点
+### macOS 额外步骤
 
-当网络出问题时，记下大致时间，之后使用 `around` 命令查看该时间前后的详细数据：
+如果希望频谱图中命名网络的功率匹配更准确，建议编译原生 App 并授权定位权限：
 
 ```bash
-# 查看某个时间点 ±5 分钟的数据
-python3 wifi_analyzer.py around "2025-04-13 15:30"
-
-# 扩大窗口到 ±10 分钟
-python3 wifi_analyzer.py around "2025-04-13 15:30" -w 10
+bash build_scanner_app.sh
+open WiFiScanner.app
+# 前往：系统设置 -> 隐私与安全性 -> 定位服务 -> 允许 WiFi Scanner
 ```
 
-### 按日期范围过滤
+原生 App 会持续把扫描结果写到 `~/.wifi-monitor/native_scan.json`，`wifi_web.py` 和 `wifi_monitor.py` 会自动优先读取。
+
+### Linux 额外步骤
+
+WiFi 全信道扫描和蓝牙发现需要 root 权限。`build_scanner_app.sh` 会引导你配置免密 sudo，也可以手动执行：
 
 ```bash
-# 只分析某几天的数据
-python3 wifi_analyzer.py --from 2025-04-10 --to 2025-04-13 summary
-
-# 组合使用
-python3 wifi_analyzer.py --from 2025-04-12 disconnects
+# 免密 sudo（替换 <user> 为你的用户名）
+sudo bash -c 'echo "<user> ALL=(root) NOPASSWD: /usr/sbin/iwlist, /usr/bin/bluetoothctl, /path/to/wifi_scanner" > /etc/sudoers.d/wifi-scan'
 ```
+
+不配置也能运行，但频谱图只显示当前已连接的 WiFi，蓝牙列表为空。
 
 ## 日志格式
 
@@ -250,15 +190,16 @@ python3 wifi_web.py --ap 192.168.1.10
 - macOS (使用 `system_profiler SPAirPortDataType` 获取 WiFi 数据)
 - Python 3.6+
 - 无需安装任何第三方库
-- 可选：Xcode Command Line Tools（用于编译 Swift RF 扫描器）
+- 可选：Xcode Command Line Tools（编译 Swift 扫描器）
 
 ### Linux
 - Python 3.6+
-- `iw`（WiFi 接口信息和噪声数据）
-- `nmcli`（NetworkManager，用于扫描可见网络）
+- `iw`（WiFi 接口信息，`sudo apt install iw`）
+- `iwlist`（后备扫描，`sudo apt install wireless-tools`）
 - `ping`（通常已预装）
-- 可选：`bluetoothctl`（蓝牙设备扫描，`sudo apt install bluez`）
-- 无需安装任何 Python 第三方库
+- 可选：`gcc`（编译 nl80211 原生扫描器，`sudo apt install build-essential`）
+- 可选：`bluetoothctl`（BLE 设备扫描，`sudo apt install bluez`）
+- 无需安装任何 Python 第三方库，无需 libnl
 
 ## 参数参考
 

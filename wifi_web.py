@@ -351,9 +351,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/debug-log":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8", errors="replace")
-            import datetime as _dt
-            with open("/tmp/wifi_web_debug.log", "a") as fh:
-                fh.write(f"[{_dt.datetime.now().strftime('%H:%M:%S.%f')}] {body}\n")
+            try:
+                import datetime as _dt
+                log_path = os.path.join(state.log_dir, "wifi_web_debug.log")
+                ensure_log_dir(state.log_dir)
+                with open(log_path, "a") as fh:
+                    fh.write(f"[{_dt.datetime.now().strftime('%H:%M:%S.%f')}] {body}\n")
+            except Exception:
+                pass
             self._json_response({"ok": True})
 
         elif parsed.path == "/api/load-logs":
